@@ -1,0 +1,59 @@
+{
+  "slug": "trees-and-mutual-recursion",
+  "title": "Discussion 5: Trees & Mutual Recursion",
+  "description": "A discussion worksheet on the Tree ADT: tracing recursive functions over trees before verifying your prediction.",
+  "class_course_name": "CS 61A",
+  "class_name": "61A",
+  "questions": [
+    {
+      "order_index": 0,
+      "title": "tree_sum",
+      "prompt": "Trace tree_sum(t), which returns the sum of all labels in t.\n\n>>> t = Tree(1, [Tree(2), Tree(3)])\n>>> tree_sum(t)",
+      "starter_code": "def tree_sum(t):\n    return t.label + sum([tree_sum(b) for b in t.branches])",
+      "expected_output": "6",
+      "language": "python",
+      "setup_code": "class Tree:\n    def __init__(self, label, branches=[]):\n        self.label = label\n        self.branches = list(branches)\n\n    def __repr__(self):\n        if self.branches:\n            branch_str = ', ' + repr(self.branches)\n        else:\n            branch_str = ''\n        return 'Tree({0}{1})'.format(self.label, branch_str)\n",
+      "test_code": "from pl_unit_test import PLTestCase\nfrom pl_helpers import name, points\nfrom code_feedback import Feedback\n\n\nclass Test(PLTestCase):\n    @points(1)\n    @name(\"tree_sum on a branching tree\")\n    def test_0(self):\n        t = self.st.Tree(1, [self.st.Tree(2), self.st.Tree(3)])\n        actual = self.st.tree_sum(t)\n        if Feedback.check_scalar(\"tree_sum(Tree(1, [Tree(2), Tree(3)]))\", 6, actual):\n            Feedback.set_score(1)\n        else:\n            Feedback.set_score(0)\n\n    @points(1)\n    @name(\"tree_sum on a leaf\")\n    def test_1(self):\n        t = self.st.Tree(5)\n        actual = self.st.tree_sum(t)\n        if Feedback.check_scalar(\"tree_sum(Tree(5))\", 5, actual):\n            Feedback.set_score(1)\n        else:\n            Feedback.set_score(0)\n"
+    },
+    {
+      "order_index": 1,
+      "title": "tree_map",
+      "prompt": "Implement tree_map(fn, t), which returns a new tree where fn has been applied to every entry in t, preserving structure.\n\n>>> t = Tree(1, [Tree(2), Tree(3)])\n>>> tree_map(lambda x: x * 2, t)",
+      "starter_code": "def tree_map(fn, t):\n    return Tree(fn(t.label), [tree_map(fn, c) for c in t.branches])",
+      "expected_output": "Tree(2, [Tree(4), Tree(6)])",
+      "language": "python",
+      "setup_code": "class Tree:\n    def __init__(self, label, branches=[]):\n        self.label = label\n        self.branches = list(branches)\n\n    def __repr__(self):\n        if self.branches:\n            branch_str = ', ' + repr(self.branches)\n        else:\n            branch_str = ''\n        return 'Tree({0}{1})'.format(self.label, branch_str)\n",
+      "test_code": "from pl_unit_test import PLTestCase\nfrom pl_helpers import name, points\nfrom code_feedback import Feedback\n\n\nclass Test(PLTestCase):\n    @points(1)\n    @name(\"tree_map doubling a branching tree\")\n    def test_0(self):\n        t = self.st.Tree(1, [self.st.Tree(2), self.st.Tree(3)])\n        actual = repr(self.st.tree_map(lambda x: x * 2, t))\n        if Feedback.check_scalar(\"tree_map(lambda x: x * 2, Tree(1, [Tree(2), Tree(3)]))\", \"Tree(2, [Tree(4), Tree(6)])\", actual):\n            Feedback.set_score(1)\n        else:\n            Feedback.set_score(0)\n\n    @points(1)\n    @name(\"tree_map incrementing a leaf\")\n    def test_1(self):\n        t = self.st.Tree(0)\n        actual = repr(self.st.tree_map(lambda x: x + 1, t))\n        if Feedback.check_scalar(\"tree_map(lambda x: x + 1, Tree(0))\", \"Tree(1)\", actual):\n            Feedback.set_score(1)\n        else:\n            Feedback.set_score(0)\n"
+    },
+    {
+      "order_index": 2,
+      "title": "tree_contains",
+      "prompt": "Trace tree_contains(t, value), which returns whether value appears anywhere in t.\n\n>>> t = Tree(1, [Tree(2), Tree(3, [Tree(4)])])\n>>> tree_contains(t, 4)",
+      "starter_code": "def tree_contains(t, value):\n    if t.label == value:\n        return True\n    return any([tree_contains(b, value) for b in t.branches])",
+      "expected_output": "True",
+      "language": "python",
+      "setup_code": "class Tree:\n    def __init__(self, label, branches=[]):\n        self.label = label\n        self.branches = list(branches)\n\n    def __repr__(self):\n        if self.branches:\n            branch_str = ', ' + repr(self.branches)\n        else:\n            branch_str = ''\n        return 'Tree({0}{1})'.format(self.label, branch_str)\n",
+      "test_code": "from pl_unit_test import PLTestCase\nfrom pl_helpers import name, points\nfrom code_feedback import Feedback\n\n\nclass Test(PLTestCase):\n    @points(1)\n    @name(\"tree_contains finds a nested value\")\n    def test_0(self):\n        t = self.st.Tree(1, [self.st.Tree(2), self.st.Tree(3, [self.st.Tree(4)])])\n        actual = self.st.tree_contains(t, 4)\n        if Feedback.check_scalar(\"tree_contains(t, 4)\", True, actual):\n            Feedback.set_score(1)\n        else:\n            Feedback.set_score(0)\n\n    @points(1)\n    @name(\"tree_contains returns False for a missing value\")\n    def test_1(self):\n        t = self.st.Tree(1, [self.st.Tree(2)])\n        actual = self.st.tree_contains(t, 99)\n        if Feedback.check_scalar(\"tree_contains(t, 99)\", False, actual):\n            Feedback.set_score(1)\n        else:\n            Feedback.set_score(0)\n"
+    },
+    {
+      "order_index": 3,
+      "title": "height",
+      "prompt": "Trace height(t), which returns the height of tree t (a leaf has height 0).\n\n>>> t = Tree(1, [Tree(2, [Tree(3)]), Tree(4)])\n>>> height(t)",
+      "starter_code": "def height(t):\n    if not t.branches:\n        return 0\n    return 1 + max([height(b) for b in t.branches])",
+      "expected_output": "2",
+      "language": "python",
+      "setup_code": "class Tree:\n    def __init__(self, label, branches=[]):\n        self.label = label\n        self.branches = list(branches)\n\n    def __repr__(self):\n        if self.branches:\n            branch_str = ', ' + repr(self.branches)\n        else:\n            branch_str = ''\n        return 'Tree({0}{1})'.format(self.label, branch_str)\n",
+      "test_code": "from pl_unit_test import PLTestCase\nfrom pl_helpers import name, points\nfrom code_feedback import Feedback\n\n\nclass Test(PLTestCase):\n    @points(1)\n    @name(\"height of a multi-level tree\")\n    def test_0(self):\n        t = self.st.Tree(1, [self.st.Tree(2, [self.st.Tree(3)]), self.st.Tree(4)])\n        actual = self.st.height(t)\n        if Feedback.check_scalar(\"height(t)\", 2, actual):\n            Feedback.set_score(1)\n        else:\n            Feedback.set_score(0)\n\n    @points(1)\n    @name(\"height of a leaf\")\n    def test_1(self):\n        t = self.st.Tree(1)\n        actual = self.st.height(t)\n        if Feedback.check_scalar(\"height(Tree(1))\", 0, actual):\n            Feedback.set_score(1)\n        else:\n            Feedback.set_score(0)\n"
+    },
+    {
+      "order_index": 4,
+      "title": "leaves",
+      "prompt": "Trace leaves(t), which returns a list of the labels of all leaf nodes (nodes with no branches) in t, left to right.\n\n>>> t = Tree(1, [Tree(2, [Tree(3), Tree(4)]), Tree(5)])\n>>> leaves(t)",
+      "starter_code": "def leaves(t):\n    if not t.branches:\n        return [t.label]\n    return sum([leaves(b) for b in t.branches], [])",
+      "expected_output": "[3, 4, 5]",
+      "language": "python",
+      "setup_code": "class Tree:\n    def __init__(self, label, branches=[]):\n        self.label = label\n        self.branches = list(branches)\n\n    def __repr__(self):\n        if self.branches:\n            branch_str = ', ' + repr(self.branches)\n        else:\n            branch_str = ''\n        return 'Tree({0}{1})'.format(self.label, branch_str)\n",
+      "test_code": "from pl_unit_test import PLTestCase\nfrom pl_helpers import name, points\nfrom code_feedback import Feedback\n\n\nclass Test(PLTestCase):\n    @points(1)\n    @name(\"leaves of a multi-level tree\")\n    def test_0(self):\n        t = self.st.Tree(1, [self.st.Tree(2, [self.st.Tree(3), self.st.Tree(4)]), self.st.Tree(5)])\n        actual = self.st.leaves(t)\n        if Feedback.check_list(\"leaves(t)\", [3, 4, 5], actual):\n            Feedback.set_score(1)\n        else:\n            Feedback.set_score(0)\n\n    @points(1)\n    @name(\"leaves of a single leaf\")\n    def test_1(self):\n        t = self.st.Tree(7)\n        actual = self.st.leaves(t)\n        if Feedback.check_list(\"leaves(Tree(7))\", [7], actual):\n            Feedback.set_score(1)\n        else:\n            Feedback.set_score(0)\n"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "slug": "cs61a-practice",
+  "title": "Discussion 2: Higher-Order Functions",
+  "description": "Standalone practice problems, authored as markdown and graded via doctests.",
+  "class_course_name": "CS 61A",
+  "class_name": "61A",
+  "question_ids": ["hailstone"]
+}

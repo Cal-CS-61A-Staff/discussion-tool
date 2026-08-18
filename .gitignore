@@ -1,0 +1,15 @@
+# Python
+server/.venv/
+server/instance/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node
+node_modules/
+client/node_modules/
+client/dist/
+
+# Env / OS
+.env
+.DS_Store

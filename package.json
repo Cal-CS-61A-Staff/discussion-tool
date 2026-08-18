@@ -1,0 +1,13 @@
+{
+  "name": "cs61a-discussion-viewer",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,yellow \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "FLASK_APP=server.app FLASK_DEBUG=1 python -m flask run -p 5050",
+    "dev:client": "cd client && npm run dev"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
