@@ -32,8 +32,6 @@ def main():
     secret_filename = os.environ['PL_RESULT_FILENAME']
     result = {
         'test_results': [],
-        'total_points': 0,
-        'max_points': 0,
         'passed_count': 0,
         'total_count': 0,
         'error': None,
@@ -119,8 +117,6 @@ def _exec_setup_and_student(setup_code, student_code, target_ns, captured):
 def _accumulate(result, test_results):
     for test_result in test_results:
         result['test_results'].append(test_result)
-        result['max_points'] += test_result['max_points']
-        result['total_points'] += test_result['points']
         result['total_count'] += 1
         if test_result['passed']:
             result['passed_count'] += 1
@@ -129,29 +125,23 @@ def _accumulate(result, test_results):
 def run_test_method(test_class, method_name, student_namespace):
     test_class.st = SimpleNamespace(**student_namespace)
     method = getattr(test_class, method_name)
-    max_points = getattr(method, '_pl_points', 1)
     label = getattr(method, '_pl_name', method_name)
     instance = test_class(method_name)
 
     try:
         instance.setUp()
         getattr(instance, method_name)()
-        earned = instance._score * max_points
         message = '; '.join(instance._messages) if instance._messages else None
         passed = instance._score >= 1.0
     except AssertionError as e:
-        earned = 0.0
         message = str(e) or 'assertion failed'
         passed = False
     except Exception as e:  # noqa: BLE001 - untrusted code can raise anything
-        earned = 0.0
         message = '{0}: {1}'.format(type(e).__name__, e)
         passed = False
 
     return {
         'name': label,
-        'points': earned,
-        'max_points': max_points,
         'passed': passed,
         'message': message,
     }

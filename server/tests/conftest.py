@@ -9,6 +9,7 @@ from server.extensions import db as _db
 class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+    RATELIMIT_ENABLED = False  # no Redis in the test environment
 
 
 @pytest.fixture()

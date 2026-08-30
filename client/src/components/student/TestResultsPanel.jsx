@@ -16,10 +16,7 @@ export default function TestResultsPanel({ results }) {
 
   return (
     <div className={`alert ${allPassed ? 'alert-success' : 'alert-warning'}`} style={{ marginTop: 12 }}>
-      <strong>
-        {results.passed_count} of {results.total_count} test cases passed
-        {results.max_points ? ` (${results.total_points}/${results.max_points} points)` : ''}
-      </strong>
+      <strong>{results.passed_count} of {results.total_count} test cases passed</strong>
       <div className="list-group" style={{ marginTop: 8 }}>
         {results.test_results.map((t, i) => (
           <div

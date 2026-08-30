@@ -1,0 +1,25 @@
+[Unit]
+Description=CS61A Discussion Viewer web app (gunicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=cs61a
+Group=cs61a
+WorkingDirectory=/opt/cs61a-discussion
+EnvironmentFile=/opt/cs61a-discussion/.env
+Environment=FLASK_ENV=production
+# The web process never blocks on Docker (grading is queued — see
+# cs61a-grading-worker@.service), so plain sync workers are fine; a
+# handful is enough to serve pages and the frequent short state/run-tests
+# polls. Tune --workers to (2 x CPU cores) + 1 as a starting point.
+ExecStart=/opt/cs61a-discussion/server/.venv/bin/gunicorn \
+    --bind 0.0.0.0:8080 \
+    --workers 4 \
+    server.wsgi:app
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

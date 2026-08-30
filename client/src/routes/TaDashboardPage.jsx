@@ -6,7 +6,7 @@ import * as taApi from '../api/ta.js';
 import { usePolling } from '../hooks/usePolling.js';
 
 export default function TaDashboardPage() {
-  const { sectionId, worksheetId } = useParams();
+  const { worksheetId } = useParams();
   const navigate = useNavigate();
   const [selectedGroupId, setSelectedGroupId] = useState(null);
 
@@ -23,29 +23,26 @@ export default function TaDashboardPage() {
           href="/"
           onClick={(e) => {
             e.preventDefault();
-            navigate(`/classes/${sectionId}/assignments/${worksheetId}`);
+            navigate('/assignments');
           }}
         >
-          ← Back to assignment
+          ← Back to assignments
         </a>
       </div>
+      {error && (
+        <div className="alert alert-danger">
+          Lost the connection ({error.message}) — still retrying every few seconds. The groups below may be out of
+          date until it reconnects.
+        </div>
+      )}
       <div className="page-header-row">
         <div>
           <h1>Live section view</h1>
           <p>
-            {data.groups.length} group{data.groups.length === 1 ? '' : 's'} · click a group for detail · updates as
-            students rate each question
+            {data.groups.length} group{data.groups.length === 1 ? '' : 's'} across every section you're in on this
+            class · click a group for detail · updates as students rate each question
           </p>
         </div>
-        <a
-          href="/"
-          onClick={(e) => {
-            e.preventDefault();
-            navigate(`/classes/${sectionId}/groups`);
-          }}
-        >
-          Manage groups →
-        </a>
       </div>
       <div className="legend">
         <span>

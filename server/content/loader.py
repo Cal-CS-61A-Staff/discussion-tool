@@ -10,7 +10,6 @@ Question markdown format:
 
     id: hailstone
     title: Hailstone
-    difficulty: medium
     code: hailstone.py
     ---
 
@@ -99,7 +98,6 @@ def parse_question_markdown(path):
     return {
         "id": frontmatter.get("id"),
         "title": frontmatter.get("title", frontmatter.get("id", "")),
-        "difficulty": frontmatter.get("difficulty"),
         "prompt": _collapse_blank_lines(body).strip(),
         "starter_code": starter_code,
         "expected_output": None,

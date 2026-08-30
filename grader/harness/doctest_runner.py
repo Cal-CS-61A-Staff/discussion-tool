@@ -26,8 +26,8 @@ class _RecordingDocTestRunner(doctest.DocTestRunner):
 def run_doctests(module):
     """Runs every >>> example found in `module`'s docstrings.
 
-    Returns a list of {name, points, max_points, passed, message} dicts, one
-    per example, matching the shape runner.py's pltest path produces.
+    Returns a list of {name, passed, message} dicts, one per example,
+    matching the shape runner.py's pltest path produces.
     """
     finder = doctest.DocTestFinder()
     tests = finder.find(module, module.__name__, module=module)
@@ -40,8 +40,6 @@ def run_doctests(module):
     return [
         {
             'name': record['name'][:80],
-            'points': 1.0 if record['passed'] else 0.0,
-            'max_points': 1,
             'passed': record['passed'],
             'message': record['message'],
         }

@@ -17,5 +17,5 @@ chown -R ag:ag /grade/work /grade/results
 su -s /bin/sh ag -c "PL_RESULT_FILENAME='$SECRET' python3 /opt/harness/runner.py"
 
 if [ ! -f "/grade/results/$SECRET" ]; then
-  echo '{"error": "grading job crashed: no result file produced", "test_results": [], "total_points": 0, "max_points": 0, "passed_count": 0, "total_count": 0}'
+  echo '{"error": "grading job crashed: no result file produced", "test_results": [], "passed_count": 0, "total_count": 0}'
 fi

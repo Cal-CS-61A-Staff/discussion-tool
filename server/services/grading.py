@@ -40,8 +40,8 @@ def run_grader(question, code):
     """Run `code` against `question.setup_code`/`question.test_code`.
 
     Returns a dict shaped like the grader image's JSON result:
-    {test_results: [...], total_points, max_points, passed_count,
-     total_count, error, student_output}. On any infrastructure failure
+    {test_results: [...], passed_count, total_count, error,
+     student_output}. On any infrastructure failure
     (container wouldn't start, timed out, produced no parseable output)
     returns a synthesized result with `error` set instead of raising —
     this executes untrusted code, so failure is an expected outcome to
@@ -123,8 +123,6 @@ def _write(tmp_dir, filename, content):
 def _error_result(message):
     return {
         "test_results": [],
-        "total_points": 0,
-        "max_points": 0,
         "passed_count": 0,
         "total_count": 0,
         "error": message,

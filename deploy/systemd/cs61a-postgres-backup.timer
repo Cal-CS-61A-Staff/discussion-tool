@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the CS61A Postgres backup daily
+
+[Timer]
+OnCalendar=daily
+# Runs the missed backup on next boot if the host was off at the scheduled
+# time — unlike the grader reaper, a skipped backup isn't self-healing.
+Persistent=true
+Unit=cs61a-postgres-backup.service
+
+[Install]
+WantedBy=timers.target

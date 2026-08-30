@@ -9,6 +9,7 @@ import json
 
 from server.extensions import db
 from server.models.group import Group
+from server.models.klass import Class
 from server.models.section import Section
 from server.models.test_run import TestRun
 from server.models.user import User
@@ -17,11 +18,19 @@ from server.tests.conftest import login_as
 
 
 def _make_section_with_questions(n=3):
-    section = Section(course_name="C", name="S")
+    ta = User(display_name="ta", role="ta")
+    db.session.add(ta)
+    db.session.flush()
+
+    klass = Class(course_name="C")
+    db.session.add(klass)
+    db.session.flush()
+
+    section = Section(class_id=klass.id, name="S", ta_user_id=ta.id)
     db.session.add(section)
     db.session.flush()
 
-    worksheet = Worksheet(section_id=section.id, slug="w1", title="W1")
+    worksheet = Worksheet(class_id=klass.id, slug="w1", title="W1")
     db.session.add(worksheet)
     db.session.flush()
 
@@ -31,8 +40,6 @@ def _make_section_with_questions(n=3):
         db.session.add(q)
         questions.append(q)
 
-    ta = User(display_name="ta", role="ta")
-    db.session.add(ta)
     db.session.commit()
 
     return section, worksheet, questions, ta
@@ -75,7 +82,7 @@ def test_delete_question_renumbers_remaining(app, client):
     assert [q.order_index for q in remaining] == [0, 1]
 
 
-def test_worksheet_grades_aggregates_latest_run_per_question(app, client):
+def test_worksheet_grades_counts_a_question_ever_passed(app, client):
     section, worksheet, questions, ta = _make_section_with_questions(2)
     login_as(client, ta)
 
@@ -85,9 +92,9 @@ def test_worksheet_grades_aggregates_latest_run_per_question(app, client):
     db.session.add(student)
     db.session.commit()
 
-    # An older, worse run followed by a better one on question 0 — grades
-    # should reflect the latest, not the max or the first.
-    for total_points, max_points in [(0, 2), (2, 2)]:
+    # An older, failing run followed by a passing one on question 0 —
+    # passed once, so it should count regardless of order.
+    for passed_count in [0, 2]:
         db.session.add(
             TestRun(
                 group_id=group.id,
@@ -96,10 +103,9 @@ def test_worksheet_grades_aggregates_latest_run_per_question(app, client):
                 source="shared",
                 prediction_text="x",
                 code_snapshot="code",
-                passed_count=int(total_points),
+                status="done",
+                passed_count=passed_count,
                 total_count=2,
-                total_points=total_points,
-                max_points=max_points,
                 results_json=json.dumps({}),
             )
         )
@@ -111,9 +117,44 @@ def test_worksheet_grades_aggregates_latest_run_per_question(app, client):
     assert len(data) == 1
     row = data[0]
     assert row["group_id"] == group.id
-    assert row["points_earned"] == 2
-    assert row["points_possible"] == 2
+    assert row["questions_passed"] == 1
     assert row["questions_attempted"] == 1
+
+
+def test_worksheet_grades_dont_regress_after_a_later_failing_attempt(app, client):
+    """The scenario a group optimizing an already-passing solution hits: a
+    passing run followed by a *failing* one shouldn't un-count the
+    question — see advance_service.has_ever_passed_tests.
+    """
+    section, worksheet, questions, ta = _make_section_with_questions(2)
+    login_as(client, ta)
+
+    group = Group(section_id=section.id, number=1, name="G1")
+    db.session.add(group)
+    student = User(display_name="s1", role="student")
+    db.session.add(student)
+    db.session.commit()
+
+    for passed_count in [2, 0]:
+        db.session.add(
+            TestRun(
+                group_id=group.id,
+                question_id=questions[0].id,
+                user_id=student.id,
+                source="shared",
+                prediction_text="x",
+                code_snapshot="code",
+                status="done",
+                passed_count=passed_count,
+                total_count=2,
+                results_json=json.dumps({}),
+            )
+        )
+    db.session.commit()
+
+    resp = client.get(f"/api/worksheets/{worksheet.id}/grades")
+    row = resp.get_json()["groups"][0]
+    assert row["questions_passed"] == 1
     assert row["total_questions"] == 2
 
 
@@ -136,10 +177,9 @@ def test_delete_worksheet_cascades(app, client):
             source="shared",
             prediction_text="x",
             code_snapshot="code",
+            status="done",
             passed_count=1,
             total_count=1,
-            total_points=1,
-            max_points=1,
             results_json=json.dumps({}),
         )
     )

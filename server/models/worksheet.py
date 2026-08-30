@@ -3,27 +3,27 @@ from server.utils import utcnow
 
 
 class Worksheet(db.Model):
-    """An assignment within a class (Section) — a class has many of these
-    over time, created by the TA via the guided question-authoring form or
-    the git-authored content pipeline (server/content/loader.py).
+    """An assignment within a Class (server/models/klass.py) — a class has
+    many of these over time, shared across every Section under it, created
+    by a TA via the guided question-authoring form or the git-authored
+    content pipeline (server/content/loader.py).
     """
 
     __tablename__ = "worksheets"
 
     id = db.Column(db.Integer, primary_key=True)
-    section_id = db.Column(db.Integer, db.ForeignKey("sections.id"), nullable=False)
+    class_id = db.Column(db.Integer, db.ForeignKey("classes.id"), nullable=False)
     slug = db.Column(db.String(80), unique=True, nullable=False)
     title = db.Column(db.String(120), nullable=False)
     description = db.Column(db.Text)
-    due_date = db.Column(db.Date, nullable=True)
-    # Fallback sort key for assignments with no due_date yet (see
-    # server/blueprints/sections.py:section_worksheets).
     created_at = db.Column(db.DateTime, default=utcnow, nullable=False)
     # Drafts (the default) are only visible to TAs — see
     # server/blueprints/sections.py:section_worksheets and
     # server/blueprints/groups.py:get_state — so a TA can build an
     # assignment out over time before releasing it to students.
     is_published = db.Column(db.Boolean, default=False, nullable=False)
+
+    klass = db.relationship("Class", backref=db.backref("worksheets", lazy="dynamic"))
 
 
 class Question(db.Model):
@@ -41,7 +41,6 @@ class Question(db.Model):
     # questions the way it does to "trace this code" questions.
     expected_output = db.Column(db.Text, nullable=True)
     language = db.Column(db.String(20), default="python")
-    difficulty = db.Column(db.String(20), nullable=True)  # 'easy' | 'medium' | 'hard'
     solution_markdown = db.Column(db.Text, nullable=True)
 
     # Autograder fields (server/services/grading.py). setup_code is a shared
@@ -50,7 +49,9 @@ class Question(db.Model):
     # grader container: 'pltest' expects test_code defining a
     # `class Test(PLTestCase)` (grader/harness/pl_unit_test.py); 'doctest'
     # ignores test_code and instead runs the >>> examples already in the
-    # student's own function docstrings (grader/harness/doctest_runner.py).
+    # student's own function docstrings (grader/harness/doctest_runner.py);
+    # 'discussion' has no autograder at all (no starter_code/test_code) —
+    # a conceptual/paper question, e.g. an environment-diagram trace.
     setup_code = db.Column(db.Text, default="")
     test_code = db.Column(db.Text, default="")
     grading_mode = db.Column(db.String(20), nullable=False, default="pltest")

@@ -7,7 +7,20 @@ class User(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     display_name = db.Column(db.String(80), nullable=False)
-    role = db.Column(db.String(10), nullable=False)  # 'student' | 'ta'
+    # 'student' | 'ta' | 'admin'. Unlike student/ta (self-selected at
+    # login — see blueprints/auth.py), 'admin' is never offered on the
+    # login form: it's granted out of band (seed data or a direct DB edit),
+    # mirroring how a real Canvas/bCourses "admin" designation comes from
+    # the roster/enrollment system rather than something a user picks.
+    role = db.Column(db.String(10), nullable=False)
+    # Optional today (the login form doesn't require it) — but when given,
+    # it's the identity key roster imports match against (see
+    # server/services/roster_import.py) instead of always creating a fresh
+    # user, and gates which section's groups a student may join (see
+    # server/models/section.py:SectionEnrollment). The natural on-ramp to
+    # real Google/Canvas OAuth later, which would populate this for real
+    # instead of trusting whatever the client sends.
+    email = db.Column(db.String(120), nullable=True, index=True)
     created_at = db.Column(db.DateTime, default=utcnow)
     # Per-user rate limit for the autograder (server/services/grading.py) —
     # separate from the group-wide predict/run cooldown, since spinning up a

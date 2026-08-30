@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        run: pip install -r server/requirements.txt pytest
+
+      # test_grading.py runs real code through this image rather than
+      # mocking the sandbox — without it present, it'd fail instead of the
+      # intended local-dev skip (it only skips when the `docker` CLI itself
+      # is missing, which it isn't on these runners).
+      - name: Build grader image
+        run: docker build -t discussion-grader:latest ./grader
+
+      - name: Run backend tests
+        run: python -m pytest server/tests -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: client
+        run: npm run build

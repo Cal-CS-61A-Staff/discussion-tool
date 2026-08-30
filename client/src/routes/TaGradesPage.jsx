@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import * as adminApi from '../api/admin.js';
 
 export default function TaGradesPage() {
-  const { sectionId, worksheetId } = useParams();
+  const { worksheetId } = useParams();
   const navigate = useNavigate();
   const [groups, setGroups] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -27,15 +27,15 @@ export default function TaGradesPage() {
           href="/"
           onClick={(e) => {
             e.preventDefault();
-            navigate(`/classes/${sectionId}/assignments/${worksheetId}`);
+            navigate('/assignments');
           }}
         >
-          ← Back to assignment
+          ← Back to assignments
         </a>
       </div>
       <div className="page-header-row">
         <h1>Grades</h1>
-        <p>Points earned from each group&apos;s latest passing test run per question.</p>
+        <p>Each group&apos;s latest test run per question.</p>
       </div>
 
       {error && <div className="alert alert-danger">{error}</div>}
@@ -45,7 +45,7 @@ export default function TaGradesPage() {
           <thead>
             <tr>
               <th>Group</th>
-              <th>Points</th>
+              <th>Questions passed</th>
               <th>Questions attempted</th>
             </tr>
           </thead>
@@ -57,7 +57,7 @@ export default function TaGradesPage() {
                   {g.is_individual && <span style={{ color: 'var(--muted)', fontSize: 12 }}> (individual)</span>}
                 </td>
                 <td>
-                  {g.points_earned} / {g.points_possible}
+                  {g.questions_passed} / {g.total_questions}
                 </td>
                 <td>
                   {g.questions_attempted} of {g.total_questions}

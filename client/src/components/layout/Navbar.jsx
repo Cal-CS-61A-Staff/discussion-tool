@@ -1,5 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { isStaff } from '../../utils/roles.js';
 
 export default function Navbar() {
   const { user, logout } = useAuth();
@@ -20,6 +21,26 @@ export default function Navbar() {
           <NavLink to="/" className={({ isActive }) => (isActive ? 'active' : '')} end>
             Home
           </NavLink>
+          {user && (
+            <NavLink to="/history" className={({ isActive }) => (isActive ? 'active' : '')}>
+              History
+            </NavLink>
+          )}
+          {isStaff(user) && (
+            <NavLink to="/discussions" className={({ isActive }) => (isActive ? 'active' : '')}>
+              Manage groups
+            </NavLink>
+          )}
+          {isStaff(user) && (
+            <NavLink to="/assignments" className={({ isActive }) => (isActive ? 'active' : '')}>
+              Assignments
+            </NavLink>
+          )}
+          {user?.role === 'admin' && (
+            <NavLink to="/admin" className={({ isActive }) => (isActive ? 'active' : '')}>
+              Admin
+            </NavLink>
+          )}
         </div>
         {user && (
           <div className="navbar-user">

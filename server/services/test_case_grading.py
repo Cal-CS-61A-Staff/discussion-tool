@@ -10,7 +10,7 @@ container-side grading mode.
 def generate_simple_test_code(test_cases):
     lines = [
         "from pl_unit_test import PLTestCase",
-        "from pl_helpers import name, points",
+        "from pl_helpers import name",
         "from code_feedback import Feedback",
         "",
         "",
@@ -21,7 +21,6 @@ def generate_simple_test_code(test_cases):
         expected = case["expected"]
         lines += [
             "",
-            "    @points(1)",
             f"    @name({call!r})",
             f"    def test_{i}(self):",
             "        try:",

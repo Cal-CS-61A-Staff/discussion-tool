@@ -76,3 +76,26 @@ class GroupQuestionState(db.Model):
     # call — see server/blueprints/groups.py:_get_or_create_state.
     predict_example_json = db.Column(db.Text, nullable=True)
     updated_at = db.Column(db.DateTime, default=utcnow, onupdate=utcnow)
+
+
+class ScratchCode(db.Model):
+    """A student's own private practice code for one question — unlike
+    GroupQuestionState.code (the group's shared, collaborative buffer),
+    this is per-user, not per-group, and never visible to groupmates.
+    Persisted server-side (not just browser localStorage) specifically so
+    it survives being viewed later — on the History page's "View work" for
+    a completed assignment, or when browsing back to an earlier unlocked
+    question mid-assignment (server/services/serializers.py:
+    build_group_work) — rather than vanishing the moment a different
+    browser/device is used or site data is cleared.
+    """
+
+    __tablename__ = "scratch_codes"
+    __table_args__ = (db.UniqueConstraint("group_id", "question_id", "user_id"),)
+
+    id = db.Column(db.Integer, primary_key=True)
+    group_id = db.Column(db.Integer, db.ForeignKey("groups.id"), nullable=False)
+    question_id = db.Column(db.Integer, db.ForeignKey("questions.id"), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    code = db.Column(db.Text, default="")
+    updated_at = db.Column(db.DateTime, default=utcnow, onupdate=utcnow)

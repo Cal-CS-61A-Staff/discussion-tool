@@ -1,41 +1,35 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import CodeEditor from './CodeEditor.jsx';
 import TestRunner from './TestRunner.jsx';
-
-function storageKey(groupId, questionId, userId) {
-  return `scratch:${groupId}:${questionId}:${userId}`;
-}
+import { updateScratchCode } from '../../api/groups.js';
 
 export default function ScratchEditor({
   groupId,
   worksheetId,
-  questionId,
-  userId,
+  initialCode,
   starterCode,
   predictCall,
   graderCooldown,
+  isIndividual,
 }) {
-  const [code, setCode] = useState('');
+  const [code, setCode] = useState(initialCode || starterCode || '');
+  const [saveStatus, setSaveStatus] = useState('idle');
   const debounceRef = useRef(null);
-  const loadedKeyRef = useRef(null);
 
-  // Load (or seed from starterCode) whenever the question changes; save is
-  // debounced to localStorage on every edit, keyed per group+question+user
-  // so it never touches the shared group state other members see.
-  useEffect(() => {
-    const key = storageKey(groupId, questionId, userId);
-    if (loadedKeyRef.current === key) return;
-    loadedKeyRef.current = key;
-    const saved = window.localStorage.getItem(key);
-    setCode(saved !== null ? saved : starterCode || '');
-  }, [groupId, questionId, userId, starterCode]);
-
+  // Persisted server-side (ScratchCode) rather than only in browser
+  // localStorage, so it's still visible later — on the History page, or
+  // when browsing back to an earlier unlocked question mid-assignment.
   const handleChange = (value) => {
     setCode(value);
+    setSaveStatus('saving');
     clearTimeout(debounceRef.current);
-    const key = storageKey(groupId, questionId, userId);
-    debounceRef.current = setTimeout(() => {
-      window.localStorage.setItem(key, value);
+    debounceRef.current = setTimeout(async () => {
+      try {
+        await updateScratchCode(groupId, worksheetId, value);
+        setSaveStatus('saved');
+      } catch {
+        setSaveStatus('error');
+      }
     }, 400);
   };
 
@@ -47,10 +41,18 @@ export default function ScratchEditor({
       </div>
       <div className="panel-body">
         <p style={{ fontSize: 13, color: 'var(--muted)', marginTop: 0 }}>
-          Not the typist right now? Use this space to try things out on your own — it's only visible to you, and
-          you can run it against the tests independently.
+          {isIndividual
+            ? "Use this space to try things out separately from your main solution — it's only visible to you, and you can run it against the tests independently. It's saved automatically and stays here even after you submit."
+            : "Not the typist right now? Use this space to try things out on your own — it's only visible to you, and you can run it against the tests independently. It's saved automatically and stays here even after you submit."}
         </p>
         <CodeEditor code={code} readOnly={false} onChange={handleChange} editorLabel="scratch" />
+        {saveStatus !== 'idle' && (
+          <p style={{ fontSize: 11, color: 'var(--muted)', margin: '4px 0 0' }}>
+            {saveStatus === 'saving' && 'Saving…'}
+            {saveStatus === 'saved' && '✓ Saved'}
+            {saveStatus === 'error' && "⚠ Couldn't save — check your connection"}
+          </p>
+        )}
         <TestRunner
           groupId={groupId}
           worksheetId={worksheetId}

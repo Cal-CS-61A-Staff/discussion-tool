@@ -1,16 +1,21 @@
 import { useCallback, useState } from 'react';
 import * as groupsApi from '../../api/groups.js';
+import * as sectionsApi from '../../api/sections.js';
 import { usePolling } from '../../hooks/usePolling.js';
 
 export default function GroupDetailModal({ groupId, worksheetId, onClose }) {
   const [releasing, setReleasing] = useState(false);
+  const [removingId, setRemovingId] = useState(null);
   const [actionError, setActionError] = useState('');
 
   const fetchDetail = useCallback(
     (signal) => groupsApi.getGroupDetail(groupId, worksheetId, signal),
     [groupId, worksheetId]
   );
-  const { data, loading, refetch } = usePolling(fetchDetail, { intervalMs: 3000, enabled: Boolean(groupId) });
+  const { data, loading, error: pollError, refetch } = usePolling(fetchDetail, {
+    intervalMs: 3000,
+    enabled: Boolean(groupId),
+  });
 
   const handleRelease = async () => {
     setActionError('');
@@ -22,6 +27,26 @@ export default function GroupDetailModal({ groupId, worksheetId, onClose }) {
       setActionError(err.message);
     } finally {
       setReleasing(false);
+    }
+  };
+
+  const handleRemoveMember = async (member) => {
+    if (
+      !window.confirm(
+        `Remove ${member.display_name} from this group? Use this if they can't come back (crashed tab, dropped the class, etc) and are blocking the group from advancing.`
+      )
+    ) {
+      return;
+    }
+    setActionError('');
+    setRemovingId(member.user_id);
+    try {
+      await sectionsApi.removeGroupMember(groupId, member.user_id);
+      await refetch();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setRemovingId(null);
     }
   };
 
@@ -38,6 +63,11 @@ export default function GroupDetailModal({ groupId, worksheetId, onClose }) {
         </div>
         <div className="panel-body">
           {loading && !data && <p>Loading…</p>}
+          {pollError && (
+            <div className="alert alert-danger">
+              Couldn&apos;t refresh this group: {pollError.message}. Retrying…
+            </div>
+          )}
           {data && data.group.completed && <p>This group has finished the worksheet.</p>}
 
           {data && !data.group.completed && (
@@ -90,13 +120,27 @@ export default function GroupDetailModal({ groupId, worksheetId, onClose }) {
                   <div
                     key={m.user_id}
                     className="list-group-item"
-                    style={{ display: 'flex', justifyContent: 'space-between' }}
+                    style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}
                   >
                     <span>
                       {m.display_name}
                       {m.is_typist ? ' (typist)' : ''}
                     </span>
-                    <span>{m.rating ?? '—'}</span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span>{m.rating ?? '—'}</span>
+                      {data.members.length > 1 && (
+                        <a
+                          href="/"
+                          className="admin-action admin-action-danger"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            if (removingId !== m.user_id) handleRemoveMember(m);
+                          }}
+                        >
+                          {removingId === m.user_id ? 'Removing…' : 'Remove'}
+                        </a>
+                      )}
+                    </span>
                   </div>
                 ))}
               </div>

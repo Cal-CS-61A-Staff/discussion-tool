@@ -4,6 +4,7 @@ import TaQuestionList from '../components/ta/TaQuestionList.jsx';
 import * as adminApi from '../api/admin.js';
 import * as sectionsApi from '../api/sections.js';
 import { useAuth } from '../context/AuthContext.jsx';
+import { isStaff } from '../utils/roles.js';
 
 export default function AssignmentPage() {
   const { sectionId, worksheetId } = useParams();
@@ -18,6 +19,7 @@ export default function AssignmentPage() {
   const [error, setError] = useState('');
   const [joining, setJoining] = useState(false);
   const [workingIndividually, setWorkingIndividually] = useState(false);
+  const [showSwitchGroup, setShowSwitchGroup] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -99,13 +101,13 @@ export default function AssignmentPage() {
           <h1>{worksheet ? worksheet.title : 'Assignment'}</h1>
           {worksheet?.description && <p>{worksheet.description}</p>}
         </div>
-        {user.role === 'ta' && (
+        {isStaff(user) && (
           <div style={{ display: 'flex', gap: 14 }}>
             <a
               href="/"
               onClick={(e) => {
                 e.preventDefault();
-                navigate(`/classes/${sectionId}/assignments/${worksheetId}/dashboard`);
+                navigate(`/assignments/${worksheetId}/dashboard`);
               }}
             >
               Live dashboard →
@@ -114,7 +116,7 @@ export default function AssignmentPage() {
               href="/"
               onClick={(e) => {
                 e.preventDefault();
-                navigate(`/classes/${sectionId}/assignments/${worksheetId}/edit`);
+                navigate(`/assignments/${worksheetId}/edit`);
               }}
             >
               Edit assignment →
@@ -127,21 +129,39 @@ export default function AssignmentPage() {
 
       {user.role === 'student' && (
         <>
-          {myGroupInClass ? (
-            <div className="panel panel-clickable" style={{ maxWidth: 360 }} onClick={() => goToWorksheet(myGroupInClass.id)}>
-              <div className="panel-heading">
-                <h4>{myGroupInClass.name}</h4>
-                <span className="badge badge-success">yours</span>
+          {myGroupInClass && !showSwitchGroup ? (
+            <>
+              <div
+                className="panel panel-clickable"
+                style={{ maxWidth: 360 }}
+                onClick={() => goToWorksheet(myGroupInClass.id)}
+              >
+                <div className="panel-heading">
+                  <h4>{myGroupInClass.name}</h4>
+                  <span className="badge badge-success">yours</span>
+                </div>
+                <div className="panel-body">
+                  <p style={{ margin: 0, fontSize: 13, color: 'var(--muted)' }}>Click to resume</p>
+                </div>
               </div>
-              <div className="panel-body">
-                <p style={{ margin: 0, fontSize: 13, color: 'var(--muted)' }}>Click to resume</p>
-              </div>
-            </div>
+              <p style={{ margin: '10px 0 0' }}>
+                <a
+                  href="/"
+                  style={{ fontSize: 13 }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setShowSwitchGroup(true);
+                  }}
+                >
+                  Enter a different group →
+                </a>
+              </p>
+            </>
           ) : (
             <form onSubmit={handleJoinByNumber} className="panel" style={{ maxWidth: 360 }}>
               <div className="panel-body">
                 <div className="form-group" style={{ marginBottom: 12 }}>
-                  <label htmlFor="groupNumber">Your group number</label>
+                  <label htmlFor="groupNumber">Group number</label>
                   <input
                     id="groupNumber"
                     className="form-control"
@@ -154,9 +174,16 @@ export default function AssignmentPage() {
                     autoFocus
                   />
                 </div>
-                <button className="btn btn-primary btn-block" type="submit" disabled={joining}>
-                  {joining ? 'Joining…' : 'Join group'}
-                </button>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn btn-primary" type="submit" disabled={joining}>
+                    {joining ? 'Joining…' : 'Join group'}
+                  </button>
+                  {myGroupInClass && (
+                    <button className="btn" type="button" onClick={() => setShowSwitchGroup(false)}>
+                      Cancel
+                    </button>
+                  )}
+                </div>
               </div>
             </form>
           )}
@@ -168,7 +195,7 @@ export default function AssignmentPage() {
         </>
       )}
 
-      {user.role === 'ta' && (
+      {isStaff(user) && (
         <>
           <div className="page-header-row" style={{ marginTop: 0 }}>
             <h3 style={{ margin: 0 }}>Questions ({questions.length})</h3>

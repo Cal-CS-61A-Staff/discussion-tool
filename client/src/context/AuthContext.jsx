@@ -15,8 +15,14 @@ export function AuthProvider({ children }) {
       .finally(() => setLoading(false));
   }, []);
 
-  const login = useCallback(async (displayName, role) => {
-    const data = await authApi.login(displayName, role);
+  const login = useCallback(async (displayName, role, email) => {
+    const data = await authApi.login(displayName, role, email);
+    setUser(data.user);
+    return data.user;
+  }, []);
+
+  const adminLogin = useCallback(async (adminId) => {
+    const data = await authApi.adminLogin(adminId);
     setUser(data.user);
     return data.user;
   }, []);
@@ -26,7 +32,7 @@ export function AuthProvider({ children }) {
     setUser(null);
   }, []);
 
-  return <AuthContext.Provider value={{ user, loading, login, logout }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user, loading, login, adminLogin, logout }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

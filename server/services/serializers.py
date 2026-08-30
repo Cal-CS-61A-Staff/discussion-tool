@@ -2,14 +2,15 @@ import json
 from datetime import timedelta
 
 from sqlalchemy import func
+from sqlalchemy.orm import joinedload
 
 from server.config import Config
 from server.extensions import db
 from server.models.attempt import Attempt
-from server.models.group import GroupAssignmentProgress, GroupMembership
+from server.models.group import Group, GroupAssignmentProgress, GroupMembership, ScratchCode
 from server.models.rating import Rating
 from server.models.test_run import TestRun
-from server.models.worksheet import Question
+from server.models.worksheet import Question, Worksheet
 from server.services import advance as advance_service
 from server.services import cooldown as cooldown_service
 from server.services import grader_cooldown as grader_cooldown_service
@@ -27,6 +28,14 @@ def total_questions_for_worksheet(worksheet_id):
 
 
 def build_group_state(group, progress, user, state):
+    # A group can have several worksheets in flight independently (each
+    # gets its own GroupAssignmentProgress/typist) — the title is here so
+    # the page can say *which one* you're looking at. Without it, two
+    # members on different worksheets in the same group would see
+    # identically-labeled pages ("Group 3") with no way to notice they're
+    # not actually looking at the same assignment.
+    worksheet_title = Worksheet.query.get(progress.worksheet_id).title
+
     question = current_question(progress.worksheet_id, progress.current_question_index)
     if question is None:
         return {
@@ -35,22 +44,33 @@ def build_group_state(group, progress, user, state):
                 "name": group.name,
                 "current_question_index": progress.current_question_index,
                 "completed": True,
+                "is_individual": group.is_individual,
             },
+            "worksheet_title": worksheet_title,
             "total_questions": total_questions_for_worksheet(progress.worksheet_id),
         }
 
     code = state.code
+    my_scratch = ScratchCode.query.filter_by(group_id=group.id, question_id=question.id, user_id=user.id).first()
     predict_call = None
     if state.predict_example_json:
         predict_call = json.loads(state.predict_example_json)["call"]
 
-    members = GroupMembership.query.filter_by(group_id=group.id).all()
+    members = GroupMembership.query.options(joinedload(GroupMembership.user)).filter_by(group_id=group.id).all()
     stale_cutoff = utcnow() - timedelta(seconds=Config.TYPIST_STALE_SECONDS)
+
+    # One query for every member's rating on this question instead of one
+    # per member — this runs on every ~2.5s /state poll for every active
+    # group, so an N+1 here scales with total concurrent groups, not just
+    # this group's size.
+    ratings_by_user = {
+        r.user_id: r for r in Rating.query.filter_by(group_id=group.id, question_id=question.id).all()
+    }
 
     member_payload = []
     my_rating = None
     for m in members:
-        rating = Rating.query.filter_by(group_id=group.id, question_id=question.id, user_id=m.user_id).first()
+        rating = ratings_by_user.get(m.user_id)
         if m.user_id == user.id:
             my_rating = rating.value if rating else None
         member_payload.append(
@@ -61,6 +81,9 @@ def build_group_state(group, progress, user, state):
                 "is_typist_stale": progress.typist_user_id == m.user_id and m.last_seen_at < stale_cutoff,
                 "has_rated_current": rating is not None,
                 "is_me": m.user_id == user.id,
+                # Recently polled /state — the "live count" only counts
+                # these, and the pen is only ever (re)assigned among them.
+                "is_active": m.last_seen_at >= stale_cutoff,
             }
         )
 
@@ -83,7 +106,7 @@ def build_group_state(group, progress, user, state):
     # member sees the same pass/fail confirmation once the typist's code
     # passes, not just the typist themselves.
     last_shared_run_row = (
-        TestRun.query.filter_by(group_id=group.id, question_id=question.id, source="shared")
+        TestRun.query.filter_by(group_id=group.id, question_id=question.id, source="shared", status="done")
         .order_by(TestRun.created_at.desc())
         .first()
     )
@@ -102,6 +125,7 @@ def build_group_state(group, progress, user, state):
             "name": group.name,
             "current_question_index": progress.current_question_index,
             "completed": False,
+            "is_individual": group.is_individual,
         },
         "question": {
             "id": question.id,
@@ -110,7 +134,7 @@ def build_group_state(group, progress, user, state):
             "prompt": question.prompt,
             "starter_code": question.starter_code,
             "language": question.language,
-            "difficulty": question.difficulty,
+            "grading_mode": question.grading_mode,
             # expected_output is deliberately withheld here (only surfaces
             # in last_attempt once someone has actually run it) — the same
             # hygiene now applies to solution_markdown (never included in
@@ -120,8 +144,10 @@ def build_group_state(group, progress, user, state):
             "has_predict_flow": bool(question.expected_output),
             "predict_call": predict_call,
         },
+        "worksheet_title": worksheet_title,
         "total_questions": total_questions_for_worksheet(progress.worksheet_id),
         "code": code,
+        "my_scratch_code": my_scratch.code if my_scratch else "",
         "cooldown": {
             "active": cooldown_service.is_active(progress),
             "remaining_seconds": cooldown_service.remaining_seconds(progress),
@@ -159,10 +185,13 @@ def build_group_detail(group, progress, state):
 
     code = state.code if state is not None else (question.starter_code or "")
 
-    members = GroupMembership.query.filter_by(group_id=group.id).all()
+    members = GroupMembership.query.options(joinedload(GroupMembership.user)).filter_by(group_id=group.id).all()
+    ratings_by_user = {
+        r.user_id: r for r in Rating.query.filter_by(group_id=group.id, question_id=question.id).all()
+    }
     member_payload = []
     for m in members:
-        rating = Rating.query.filter_by(group_id=group.id, question_id=question.id, user_id=m.user_id).first()
+        rating = ratings_by_user.get(m.user_id)
         member_payload.append(
             {
                 "user_id": m.user_id,
@@ -202,7 +231,7 @@ def build_group_detail(group, progress, state):
             "prompt": question.prompt,
             "expected_output": question.expected_output,
             "language": question.language,
-            "difficulty": question.difficulty,
+            "grading_mode": question.grading_mode,
         },
         "total_questions": total_questions_for_worksheet(progress.worksheet_id),
         "code": code,
@@ -243,18 +272,20 @@ def build_dashboard(worksheet_id, groups):
         typist_user_id = progress.typist_user_id if progress else None
         question_started_at = progress.question_started_at if progress else None
 
-        members = GroupMembership.query.filter_by(group_id=group.id).all()
+        members = GroupMembership.query.options(joinedload(GroupMembership.user)).filter_by(group_id=group.id).all()
         question = current_question(worksheet_id, current_index)
 
-        member_payload = []
-        for m in members:
-            rating_value = None
-            if question is not None:
-                rating = Rating.query.filter_by(
-                    group_id=group.id, question_id=question.id, user_id=m.user_id
-                ).first()
-                rating_value = rating.value if rating else None
-            member_payload.append({"user_id": m.user_id, "display_name": m.user.display_name, "rating": rating_value})
+        ratings_by_user = {}
+        if question is not None:
+            ratings_by_user = {
+                r.user_id: r.value
+                for r in Rating.query.filter_by(group_id=group.id, question_id=question.id).all()
+            }
+
+        member_payload = [
+            {"user_id": m.user_id, "display_name": m.user.display_name, "rating": ratings_by_user.get(m.user_id)}
+            for m in members
+        ]
 
         typist_name = next((m.user.display_name for m in members if m.user_id == typist_user_id), None)
         completed = question is None
@@ -280,3 +311,179 @@ def build_dashboard(worksheet_id, groups):
             }
         )
     return payload
+
+
+def build_group_history(group):
+    """Every published discussion this group has touched in its class, most
+    recent first — visible to both the group's own students and its TA (see
+    server/blueprints/groups.py:get_group_history). Draft worksheets are
+    excluded even for a TA/admin viewer: this is "what this group has done"
+    from the group's perspective, not an authoring surface.
+    """
+    worksheets = (
+        Worksheet.query.filter_by(class_id=group.section.class_id, is_published=True)
+        .order_by(Worksheet.created_at.desc())
+        .all()
+    )
+
+    history = []
+    for worksheet in worksheets:
+        total_questions = Question.query.filter_by(worksheet_id=worksheet.id).count()
+        progress = GroupAssignmentProgress.query.filter_by(group_id=group.id, worksheet_id=worksheet.id).first()
+
+        if progress is None:
+            status = "not_started"
+            questions_completed = 0
+        elif total_questions > 0 and progress.current_question_index >= total_questions:
+            status = "completed"
+            questions_completed = total_questions
+        else:
+            status = "in_progress"
+            questions_completed = progress.current_question_index
+
+        questions_passed = 0
+        if progress is not None:
+            for question in Question.query.filter_by(worksheet_id=worksheet.id).all():
+                if advance_service.has_ever_passed_tests(group.id, question.id):
+                    questions_passed += 1
+
+        history.append(
+            {
+                "worksheet_id": worksheet.id,
+                "title": worksheet.title,
+                "status": status,
+                "questions_completed": questions_completed,
+                "total_questions": total_questions,
+                "questions_passed": questions_passed,
+            }
+        )
+    return history
+
+
+def build_section_progress(section):
+    """One row per (non-individual) group in this section: its roster and a
+    general progress meter across every published assignment in its class —
+    how many it's completed, and its average confidence rating across
+    everything it's rated so far. Backs the "Discussions" tab's per-section
+    view (server/blueprints/sections.py:section_progress), which is
+    deliberately just roster + progress, not assignment content — that
+    lives on the class's "Assignments" tab instead.
+    """
+    groups = Group.query.filter_by(section_id=section.id, is_individual=False).order_by(Group.number).all()
+    payload = []
+    for group in groups:
+        members = GroupMembership.query.filter_by(group_id=group.id).all()
+        history = build_group_history(group)
+        total = len(history)
+        completed = sum(1 for h in history if h["status"] == "completed")
+        avg_rating = db.session.query(func.avg(Rating.value)).filter_by(group_id=group.id).scalar()
+        payload.append(
+            {
+                "group_id": group.id,
+                "number": group.number,
+                "name": group.name,
+                "member_names": [m.user.display_name for m in members],
+                "assignments_completed": completed,
+                "total_assignments": total,
+                "average_rating": round(avg_rating, 1) if avg_rating is not None else None,
+            }
+        )
+    return payload
+
+
+def build_my_assignments(user):
+    """Every assignment the current user's own group(s) have completed,
+    with their *personal* average confidence rating across it (mean of
+    their own Rating.value per question, not the whole group's) — a
+    student's "My Assignments" page. Spans however many groups they're a
+    member of; an assignment completed in more than one group appears once
+    per group, since progress and ratings are per-group.
+    """
+    memberships = GroupMembership.query.filter_by(user_id=user.id).all()
+    payload = []
+    for membership in memberships:
+        group = membership.group
+        progresses = GroupAssignmentProgress.query.filter_by(group_id=group.id).all()
+        for progress in progresses:
+            worksheet = Worksheet.query.get(progress.worksheet_id)
+            if worksheet is None or not worksheet.is_published:
+                continue
+            question_ids = [
+                q.id for q in Question.query.filter_by(worksheet_id=worksheet.id).with_entities(Question.id).all()
+            ]
+            if not question_ids or progress.current_question_index < len(question_ids):
+                continue  # not completed yet
+
+            my_avg_rating = (
+                db.session.query(func.avg(Rating.value))
+                .filter(Rating.user_id == user.id, Rating.question_id.in_(question_ids), Rating.group_id == group.id)
+                .scalar()
+            )
+            payload.append(
+                {
+                    "group_id": group.id,
+                    "group_name": group.name,
+                    "worksheet_id": worksheet.id,
+                    "title": worksheet.title,
+                    "my_average_rating": round(my_avg_rating, 1) if my_avg_rating is not None else None,
+                }
+            )
+    return payload
+
+
+def build_group_work(group, worksheet_id, user):
+    """Replay of this group's already-*unlocked* questions on one
+    assignment and their most recent submitted code (the latest shared
+    "Run tests" snapshot) — backs both the History page's "View work"
+    section (a completed assignment, so every question is unlocked) and
+    the live worksheet page's "view a previous question" navigation (an
+    in-progress assignment, where only questions up to the group's current
+    position are unlocked — a locked, not-yet-reached question's prompt is
+    never included here). Either way, a viewer can re-run tests against
+    what's returned for practice (POST .../practice-run in
+    server/blueprints/groups.py) without touching the group's real
+    progress/completed status.
+
+    `passed` reflects whether the group *ever* passed this question
+    (advance_service.has_ever_passed_tests), not whether the code shown
+    right now would — code shown is always the latest submission, so a
+    group optimizing an already-passing solution can keep resubmitting
+    without their own "passed" badge flickering off if an in-progress
+    attempt happens to fail.
+
+    `scratch_code` is `user`'s own personal practice code for that
+    question (ScratchCode), not the group's shared one — the whole reason
+    it's persisted server-side rather than only in browser localStorage is
+    so it's still visible here, not just live while working.
+    """
+    worksheet = Worksheet.query.get_or_404(worksheet_id)
+    progress = GroupAssignmentProgress.query.filter_by(group_id=group.id, worksheet_id=worksheet_id).first()
+    unlocked_index = progress.current_question_index if progress is not None else 0
+
+    questions = (
+        Question.query.filter_by(worksheet_id=worksheet.id)
+        .filter(Question.order_index <= unlocked_index)
+        .order_by(Question.order_index)
+        .all()
+    )
+    payload = []
+    for question in questions:
+        latest_run = (
+            TestRun.query.filter_by(group_id=group.id, question_id=question.id, source="shared")
+            .order_by(TestRun.created_at.desc())
+            .first()
+        )
+        scratch = ScratchCode.query.filter_by(group_id=group.id, question_id=question.id, user_id=user.id).first()
+        payload.append(
+            {
+                "question_id": question.id,
+                "order_index": question.order_index,
+                "title": question.title,
+                "prompt": question.prompt,
+                "grading_mode": question.grading_mode,
+                "code": latest_run.code_snapshot if latest_run else None,
+                "passed": advance_service.has_ever_passed_tests(group.id, question.id),
+                "scratch_code": scratch.code if scratch and scratch.code else None,
+            }
+        )
+    return {"worksheet_title": worksheet.title, "questions": payload}

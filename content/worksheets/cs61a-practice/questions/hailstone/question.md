@@ -1,6 +1,5 @@
 id: hailstone
 title: Hailstone
-difficulty: medium
 code: hailstone.py
 ---
 

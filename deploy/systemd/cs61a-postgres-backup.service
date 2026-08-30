@@ -1,0 +1,10 @@
+[Unit]
+Description=Back up the CS61A Discussion Postgres database
+After=network.target
+
+[Service]
+Type=oneshot
+User=cs61a
+Group=cs61a
+EnvironmentFile=/opt/cs61a-discussion/.env
+ExecStart=/opt/cs61a-discussion/deploy/scripts/backup_postgres.sh

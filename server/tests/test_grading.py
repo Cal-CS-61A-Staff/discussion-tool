@@ -21,12 +21,11 @@ class Tree:
 
 TEST_CODE = """
 from pl_unit_test import PLTestCase
-from pl_helpers import name, points
+from pl_helpers import name
 from code_feedback import Feedback
 
 
 class Test(PLTestCase):
-    @points(1)
     @name("basic")
     def test_0(self):
         actual = self.st.tree_sum(self.st.Tree(1, [self.st.Tree(2), self.st.Tree(3)]))
@@ -35,7 +34,6 @@ class Test(PLTestCase):
         else:
             Feedback.set_score(0)
 
-    @points(1)
     @name("leaf")
     def test_1(self):
         actual = self.st.tree_sum(self.st.Tree(5))
@@ -83,7 +81,6 @@ def test_correct_submission_passes_all(question):
     assert result["error"] is None
     assert result["passed_count"] == 2
     assert result["total_count"] == 2
-    assert result["total_points"] == 2
 
 
 def test_wrong_submission_reports_partial_failure(question):

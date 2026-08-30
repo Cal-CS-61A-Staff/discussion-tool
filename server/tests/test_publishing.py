@@ -1,34 +1,36 @@
 """Covers the draft/publish gate on assignments (Worksheet.is_published) and
-the due-date-then-creation-date ordering of the class assignment list.
+the creation-order ordering of the class assignment list.
 """
-
-from datetime import timedelta
 
 from server.extensions import db
 from server.models.group import Group, GroupMembership
+from server.models.klass import Class
 from server.models.section import Section
 from server.models.user import User
 from server.models.worksheet import Worksheet
 from server.tests.conftest import login_as
-from server.utils import utcnow
 
 
 def _make_class_with_users():
-    section = Section(course_name="C", name="S")
-    db.session.add(section)
-    db.session.flush()
-
     ta = User(display_name="ta", role="ta")
     student = User(display_name="student", role="student")
     db.session.add_all([ta, student])
+    db.session.flush()
+
+    klass = Class(course_name="C")
+    db.session.add(klass)
+    db.session.flush()
+
+    section = Section(class_id=klass.id, name="S", ta_user_id=ta.id)
+    db.session.add(section)
     db.session.commit()
     return section, ta, student
 
 
 def test_unpublished_worksheet_hidden_from_students_but_visible_to_ta(app, client):
     section, ta, student = _make_class_with_users()
-    draft = Worksheet(section_id=section.id, slug="draft", title="Draft Assignment", is_published=False)
-    released = Worksheet(section_id=section.id, slug="released", title="Released Assignment", is_published=True)
+    draft = Worksheet(class_id=section.class_id, slug="draft", title="Draft Assignment", is_published=False)
+    released = Worksheet(class_id=section.class_id, slug="released", title="Released Assignment", is_published=True)
     db.session.add_all([draft, released])
     db.session.commit()
 
@@ -45,7 +47,7 @@ def test_unpublished_worksheet_hidden_from_students_but_visible_to_ta(app, clien
 
 def test_student_blocked_from_group_state_on_unpublished_worksheet(app, client):
     section, ta, student = _make_class_with_users()
-    worksheet = Worksheet(section_id=section.id, slug="draft", title="Draft", is_published=False)
+    worksheet = Worksheet(class_id=section.class_id, slug="draft", title="Draft", is_published=False)
     db.session.add(worksheet)
     db.session.flush()
 
@@ -71,7 +73,7 @@ def test_student_blocked_from_group_state_on_unpublished_worksheet(app, client):
 
 def test_ta_can_still_access_unpublished_worksheet_state(app, client):
     section, ta, student = _make_class_with_users()
-    worksheet = Worksheet(section_id=section.id, slug="draft", title="Draft", is_published=False)
+    worksheet = Worksheet(class_id=section.class_id, slug="draft", title="Draft", is_published=False)
     db.session.add(worksheet)
     db.session.flush()
 
@@ -88,8 +90,8 @@ def test_ta_can_still_access_unpublished_worksheet_state(app, client):
 
 def test_worksheet_count_excludes_drafts_for_students(app, client):
     section, ta, student = _make_class_with_users()
-    draft = Worksheet(section_id=section.id, slug="draft", title="Draft", is_published=False)
-    released = Worksheet(section_id=section.id, slug="released", title="Released", is_published=True)
+    draft = Worksheet(class_id=section.class_id, slug="draft", title="Draft", is_published=False)
+    released = Worksheet(class_id=section.class_id, slug="released", title="Released", is_published=True)
     db.session.add_all([draft, released])
     db.session.commit()
 
@@ -104,34 +106,19 @@ def test_worksheet_count_excludes_drafts_for_students(app, client):
     assert row["worksheet_count"] == 2
 
 
-def test_worksheets_ordered_by_due_date_then_creation(app, client):
+def test_worksheets_ordered_by_creation(app, client):
     section, ta, _student = _make_class_with_users()
-    # created_at uses utcnow() (server/utils.py), so derive "today" from the
-    # same clock — using the local date.today() here could momentarily
-    # disagree near a UTC day boundary and make this test flaky.
-    today = utcnow().date()
 
-    # Created in an order that would be wrong if we sorted by id/creation
-    # alone: "No due date, made first" should land between the two dated
-    # ones once due dates are taken into account, and "No due date, made
-    # last" (no due date) should sort by its own creation time.
-    no_date_first = Worksheet(section_id=section.id, slug="a", title="No due date, made first")
-    db.session.add(no_date_first)
+    first = Worksheet(class_id=section.class_id, slug="a", title="Made first")
+    db.session.add(first)
     db.session.commit()
 
-    due_later = Worksheet(section_id=section.id, slug="b", title="Due later", due_date=today + timedelta(days=10))
-    due_soon = Worksheet(section_id=section.id, slug="c", title="Due soon", due_date=today + timedelta(days=1))
-    db.session.add_all([due_later, due_soon])
-    db.session.commit()
-
-    no_date_first.due_date = None  # explicit, no due date set
+    second = Worksheet(class_id=section.class_id, slug="b", title="Made second")
+    db.session.add(second)
     db.session.commit()
 
     login_as(client, ta)
     resp = client.get(f"/api/sections/{section.id}/worksheets")
     titles = [w["title"] for w in resp.get_json()["worksheets"]]
 
-    # "No due date, made first" was created before the dated ones, so its
-    # creation-date fallback sorts it ahead of both; the dated ones then
-    # follow in due-date order.
-    assert titles == ["No due date, made first", "Due soon", "Due later"]
+    assert titles == ["Made first", "Made second"]

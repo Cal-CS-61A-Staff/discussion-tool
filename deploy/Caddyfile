@@ -1,0 +1,14 @@
+fake-domain.example.edu {
+	# Caddy handles TLS automatically (provisions + renews a Let's Encrypt
+	# cert for the domain above) — replace it with your real domain and
+	# nothing else here needs to change for HTTPS to work.
+	reverse_proxy 127.0.0.1:8080
+
+	encode gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+	}
+}

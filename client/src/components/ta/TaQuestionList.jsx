@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-const DIFFICULTY_BADGE_CLASS = { easy: 'badge-success', medium: 'badge-warning', hard: 'badge-danger' };
+const GRADING_MODE_LABEL = { simple: 'simple', doctest: 'doctest', pltest: 'custom tests', discussion: 'discussion' };
 
 export default function TaQuestionList({ questions }) {
   const [expandedId, setExpandedId] = useState(null);
@@ -21,15 +21,9 @@ export default function TaQuestionList({ questions }) {
             >
               <span>
                 <b>{q.order_index + 1}.</b> {q.title}
-                {q.difficulty && (
-                  <span
-                    className={`badge ${DIFFICULTY_BADGE_CLASS[q.difficulty] || 'badge-default'}`}
-                    style={{ marginLeft: 8 }}
-                  >
-                    {q.difficulty}
-                  </span>
-                )}
-                <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--muted)' }}>{q.grading_mode}</span>
+                <span className="badge badge-default" style={{ marginLeft: 8 }}>
+                  {GRADING_MODE_LABEL[q.grading_mode] || q.grading_mode}
+                </span>
               </span>
               <span style={{ color: 'var(--muted)' }}>{expanded ? '▲' : '▼'}</span>
             </div>
@@ -38,10 +32,14 @@ export default function TaQuestionList({ questions }) {
                 <div className="q-label">Prompt</div>
                 <p className="q-text">{q.prompt}</p>
 
-                <div className="q-label">Starter code</div>
-                <pre className="code-editor-wrap" style={{ padding: 10, color: '#eee', margin: '0 0 12px' }}>
-                  <code className="code">{q.starter_code}</code>
-                </pre>
+                {q.starter_code && (
+                  <>
+                    <div className="q-label">Starter code</div>
+                    <pre className="code-editor-wrap" style={{ padding: 10, color: '#eee', margin: '0 0 12px' }}>
+                      <code className="code">{q.starter_code}</code>
+                    </pre>
+                  </>
+                )}
 
                 {q.expected_output && (
                   <div className="alert alert-info">
@@ -65,12 +63,28 @@ export default function TaQuestionList({ questions }) {
                   </>
                 )}
 
+                {q.grading_mode === 'pltest' && q.test_code && (
+                  <>
+                    <div className="q-label">Test code</div>
+                    <pre className="code-editor-wrap" style={{ padding: 10, color: '#eee', margin: '0 0 12px' }}>
+                      <code className="code">{q.test_code}</code>
+                    </pre>
+                  </>
+                )}
+
                 {q.reference_solution && (
                   <>
                     <div className="q-label">Reference solution</div>
-                    <pre className="code-editor-wrap" style={{ padding: 10, color: '#eee', margin: 0 }}>
+                    <pre className="code-editor-wrap" style={{ padding: 10, color: '#eee', margin: '0 0 12px' }}>
                       <code className="code">{q.reference_solution}</code>
                     </pre>
+                  </>
+                )}
+
+                {q.solution_markdown && (
+                  <>
+                    <div className="q-label">Solution</div>
+                    <p className="q-text">{q.solution_markdown}</p>
                   </>
                 )}
               </div>

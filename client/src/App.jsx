@@ -1,15 +1,26 @@
+import { lazy, Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import Layout from './components/layout/Layout.jsx';
+import ErrorBoundary from './components/ErrorBoundary.jsx';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
-import AssignmentPage from './routes/AssignmentPage.jsx';
-import ClassPage from './routes/ClassPage.jsx';
-import HomePage from './routes/HomePage.jsx';
-import LoginPage from './routes/LoginPage.jsx';
-import StudentWorksheetPage from './routes/StudentWorksheetPage.jsx';
-import TaAssignmentEditorPage from './routes/TaAssignmentEditorPage.jsx';
-import TaDashboardPage from './routes/TaDashboardPage.jsx';
-import TaGradesPage from './routes/TaGradesPage.jsx';
-import TaGroupsPage from './routes/TaGroupsPage.jsx';
+
+// Route-level code splitting: CodeMirror + react-markdown (pulled in by the
+// worksheet/editor/history pages) are the bulk of the bundle — lazy-loading
+// per route means a student landing on the lightweight pages (login, home,
+// class picker) doesn't pay for that weight up front.
+const AdminPage = lazy(() => import('./routes/AdminPage.jsx'));
+const AssignmentPage = lazy(() => import('./routes/AssignmentPage.jsx'));
+const AssignmentsPage = lazy(() => import('./routes/AssignmentsPage.jsx'));
+const ClassPage = lazy(() => import('./routes/ClassPage.jsx'));
+const ClassSectionsPage = lazy(() => import('./routes/ClassSectionsPage.jsx'));
+const DiscussionsPage = lazy(() => import('./routes/DiscussionsPage.jsx'));
+const HistoryPage = lazy(() => import('./routes/HistoryPage.jsx'));
+const HomePage = lazy(() => import('./routes/HomePage.jsx'));
+const LoginPage = lazy(() => import('./routes/LoginPage.jsx'));
+const StudentWorksheetPage = lazy(() => import('./routes/StudentWorksheetPage.jsx'));
+const TaAssignmentEditorPage = lazy(() => import('./routes/TaAssignmentEditorPage.jsx'));
+const TaDashboardPage = lazy(() => import('./routes/TaDashboardPage.jsx'));
+const TaGradesPage = lazy(() => import('./routes/TaGradesPage.jsx'));
 
 function RequireAuth({ children }) {
   const { user, loading } = useAuth();
@@ -39,10 +50,66 @@ function AppRoutes() {
         }
       />
       <Route
-        path="/classes/:sectionId/groups"
+        path="/admin"
         element={
           <RequireAuth>
-            <TaGroupsPage />
+            <AdminPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/discussions"
+        element={
+          <RequireAuth>
+            <DiscussionsPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/discussions/:classId"
+        element={
+          <RequireAuth>
+            <ClassSectionsPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/history"
+        element={
+          <RequireAuth>
+            <HistoryPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/assignments"
+        element={
+          <RequireAuth>
+            <AssignmentsPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/assignments/:worksheetId/edit"
+        element={
+          <RequireAuth>
+            <TaAssignmentEditorPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/assignments/:worksheetId/dashboard"
+        element={
+          <RequireAuth>
+            <TaDashboardPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/assignments/:worksheetId/grades"
+        element={
+          <RequireAuth>
+            <TaGradesPage />
           </RequireAuth>
         }
       />
@@ -51,30 +118,6 @@ function AppRoutes() {
         element={
           <RequireAuth>
             <AssignmentPage />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/classes/:sectionId/assignments/:worksheetId/edit"
-        element={
-          <RequireAuth>
-            <TaAssignmentEditorPage />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/classes/:sectionId/assignments/:worksheetId/dashboard"
-        element={
-          <RequireAuth>
-            <TaDashboardPage />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/classes/:sectionId/assignments/:worksheetId/grades"
-        element={
-          <RequireAuth>
-            <TaGradesPage />
           </RequireAuth>
         }
       />
@@ -93,8 +136,12 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <AppRoutes />
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <Suspense fallback={<div className="page-loading">Loading…</div>}>
+          <AppRoutes />
+        </Suspense>
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }

@@ -25,25 +25,8 @@ from sqlalchemy import update
 from server.config import Config
 from server.extensions import db
 from server.models.group import GroupAssignmentProgress, GroupMembership
+from server.services import presence
 from server.utils import utcnow
-
-
-def _active_members(group_id, exclude_user_id=None):
-    cutoff = utcnow() - timedelta(seconds=Config.TYPIST_STALE_SECONDS)
-    query = GroupMembership.query.filter(
-        GroupMembership.group_id == group_id,
-        GroupMembership.last_seen_at >= cutoff,
-    )
-    if exclude_user_id is not None:
-        query = query.filter(GroupMembership.user_id != exclude_user_id)
-    return query.all()
-
-
-def _all_members(group_id, exclude_user_id=None):
-    query = GroupMembership.query.filter_by(group_id=group_id)
-    if exclude_user_id is not None:
-        query = query.filter(GroupMembership.user_id != exclude_user_id)
-    return query.all()
 
 
 def assign_random_typist(progress, group_id, exclude_user_id=None):
@@ -52,7 +35,7 @@ def assign_random_typist(progress, group_id, exclude_user_id=None):
     empty just because everyone's mid-navigation). Returns the chosen
     user_id, or None if the group has nobody to assign to.
     """
-    candidates = _active_members(group_id, exclude_user_id) or _all_members(group_id, exclude_user_id)
+    candidates = presence.active_or_all_members(group_id, exclude_user_id)
     if not candidates:
         progress.typist_user_id = None
         progress.typist_claimed_at = None
@@ -88,7 +71,7 @@ def give_up_typist(progress, group_id, user_id):
     random *other* active member. Returns False if `user_id` isn't
     actually the current typist (stale click / already handed off).
     """
-    candidates = _active_members(group_id, exclude_user_id=user_id) or _all_members(group_id, exclude_user_id=user_id)
+    candidates = presence.active_or_all_members(group_id, exclude_user_id=user_id)
     new_typist_id = random.choice(candidates).user_id if candidates else user_id
 
     result = db.session.execute(

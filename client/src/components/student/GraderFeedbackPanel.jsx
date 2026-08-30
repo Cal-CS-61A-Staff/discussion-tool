@@ -1,5 +1,3 @@
-import { useEffect, useState } from 'react';
-
 function withNumberHighlights(call) {
   return call.split(/(\d+)/g).map((part, i) =>
     /^\d+$/.test(part) ? (
@@ -13,28 +11,20 @@ function withNumberHighlights(call) {
 }
 
 export default function GraderFeedbackPanel({ feedback }) {
-  const [dismissed, setDismissed] = useState(false);
-
-  // Keyed on content, not object identity: `feedback` can be re-derived
-  // from a fresh poll (e.g. a teammate's last shared run) with an
-  // identical value but a new object reference every ~2.5s, which would
-  // otherwise silently un-dismiss the panel on every poll.
-  useEffect(() => {
-    setDismissed(false);
-  }, [feedback?.call, feedback?.expected, feedback?.got, feedback?.is_match]);
-
-  if (!feedback || dismissed) return null;
+  if (!feedback) return null;
 
   return (
-    <div className="grader-feedback-panel">
+    <div className={`grader-feedback-panel ${feedback.is_match ? 'grader-feedback-panel--pass' : 'grader-feedback-panel--fail'}`}>
       <div className="grader-feedback-header">
         <span>Grader Feedback</span>
-        <button className="modal-close-btn" onClick={() => setDismissed(true)}>
-          ✕
-        </button>
       </div>
       <div className="grader-feedback-body">
-        <p className="grader-feedback-title">{feedback.is_match ? 'Test passed:' : 'Test failed:'}</p>
+        <p className="grader-feedback-title">
+          <span className={`badge ${feedback.is_match ? 'badge-success' : 'badge-danger'}`} style={{ marginRight: 8 }}>
+            {feedback.is_match ? '✓' : '✗'}
+          </span>
+          {feedback.is_match ? 'Prediction correct:' : 'Prediction incorrect:'}
+        </p>
         <pre className="grader-feedback-call">
           <code>{withNumberHighlights(feedback.call)}</code>
         </pre>
@@ -46,6 +36,12 @@ export default function GraderFeedbackPanel({ feedback }) {
           <span className="grader-feedback-label">Got:</span>
           <pre className="grader-feedback-values">{feedback.got}</pre>
         </div>
+        {!feedback.is_match && (
+          <p className="grader-feedback-note">
+            This checks your understanding of the code, separately from the test results below — your code can
+            still pass every test case even if your prediction was off.
+          </p>
+        )}
       </div>
     </div>
   );
