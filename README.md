@@ -225,6 +225,14 @@ sudo systemctl enable --now cs61a-grading-worker@{1..10}
 
 Both `.service` files read `/opt/cs61a-discussion/.env` for the env vars listed above (`SECRET_KEY`, `DATABASE_URL`, `GOOGLE_CLIENT_ID`/`SECRET`, `REDIS_URL`, etc. — see `.env.example`). Create that file on the host; it isn't, and shouldn't be, committed to the repo.
 
+### Deploying a change
+
+Pushing to `main` doesn't deploy anything by itself — it only runs CI. This is a live tool students use during actual discussion sections, so deploys happen on purpose, not automatically on every commit. `deploy/scripts/deploy.sh` does the actual work — pulls `main`, reinstalls backend deps, runs migrations, rebuilds the grader image and the frontend, restarts the web app and every grading worker, then checks `/api/health`:
+
+```bash
+sudo -u cs61a bash /opt/cs61a-discussion/deploy/scripts/deploy.sh
+```
+
 ### Reverse proxy & TLS (`deploy/Caddyfile`)
 
 Nothing terminates HTTPS on its own — gunicorn (`cs61a-discussion-web.service`) just listens on `127.0.0.1:8080`. `deploy/Caddyfile` puts [Caddy](https://caddyserver.com/) in front of it: replace `fake-domain.example.edu` with your real domain and Caddy provisions and renews a Let's Encrypt certificate automatically, no separate certbot setup. (nginx works too if you already run it elsewhere; Caddy's just less to configure correctly for one domain.)

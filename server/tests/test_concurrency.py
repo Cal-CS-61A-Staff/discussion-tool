@@ -56,7 +56,7 @@ def _make_group_with_members(n=2):
     db.session.add(section)
     db.session.flush()
 
-    worksheet = Worksheet(class_id=klass.id, slug="w1", title="W1")
+    worksheet = Worksheet(class_id=klass.id, slug="w1", title="W1", is_published=True)
     db.session.add(worksheet)
     db.session.flush()
 
@@ -538,3 +538,46 @@ def test_advance_cannot_double_advance(app):
     assert progress.current_question_index == 1
 
     stale_session.close()
+
+
+def test_group_routes_reject_a_worksheet_from_a_different_class(app, client):
+    """A student's group belongs to exactly one class — none of the routes
+    that accept a client-supplied worksheet_id should let them use it with
+    a worksheet from a *different* class, published or not. Without
+    _worksheet_for_group_or_error (server/blueprints/groups.py), any of
+    these would happily create progress against, view, or even run real
+    code through the sandboxed grader against a totally unrelated
+    worksheet, just by supplying its id.
+    """
+    from server.tests.conftest import login_as
+
+    group, _progress, _question, users = _make_group_with_members(1)
+
+    other_klass = Class(course_name="Other")
+    db.session.add(other_klass)
+    db.session.flush()
+    foreign_worksheet = Worksheet(class_id=other_klass.id, slug="foreign", title="Foreign", is_published=True)
+    db.session.add(foreign_worksheet)
+    db.session.commit()
+
+    login_as(client, users[0])
+
+    resp = client.get(f"/api/groups/{group.id}/state?worksheet_id={foreign_worksheet.id}")
+    assert resp.status_code == 404
+
+    resp = client.post(
+        f"/api/groups/{group.id}/run-tests",
+        json={"worksheet_id": foreign_worksheet.id, "source": "scratch", "code": "x = 1", "prediction": "x"},
+    )
+    assert resp.status_code == 404
+
+    resp = client.get(f"/api/groups/{group.id}/worksheets/{foreign_worksheet.id}/work")
+    assert resp.status_code == 404
+
+    resp = client.post(f"/api/groups/{group.id}/ratings", json={"worksheet_id": foreign_worksheet.id, "value": 5})
+    assert resp.status_code == 404
+
+    # Confirms it's really the class check (not something else rejecting
+    # every request): the group's own, same-class worksheet still works.
+    resp = client.get(f"/api/groups/{group.id}/state?worksheet_id={_progress.worksheet_id}")
+    assert resp.status_code == 200

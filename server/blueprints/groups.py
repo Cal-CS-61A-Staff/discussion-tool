@@ -48,6 +48,27 @@ def _worksheet_id_from_body(data):
         return None
 
 
+def _worksheet_for_group_or_error(group, worksheet_id, user):
+    """None if `worksheet_id` may be used with `group` — i.e. it actually
+    belongs to the group's own class, and (for non-staff) has been
+    released — else a Flask error response to return as-is.
+
+    Every route below that accepts a client-supplied worksheet_id must call
+    this before touching progress/state/grading for it:
+    `_get_or_create_progress` (and friends) only ever see a bare id, with
+    no way to enforce this themselves, so without this check any
+    authenticated student could probe, view, or even run real code through
+    the sandboxed grader against ANY worksheet in the whole app — other
+    classes' and unpublished drafts included — just by supplying its id.
+    """
+    worksheet = Worksheet.query.get(worksheet_id)
+    if worksheet is None or worksheet.class_id != group.section.class_id:
+        return jsonify(error="assignment not found"), 404
+    if user.role not in ("ta", "admin") and not worksheet.is_published:
+        return jsonify(error="this assignment hasn't been released yet"), 403
+    return None
+
+
 def _get_or_create_progress(group, worksheet_id):
     progress = GroupAssignmentProgress.query.filter_by(group_id=group.id, worksheet_id=worksheet_id).first()
     if progress is None:
@@ -92,11 +113,9 @@ def get_state(group_id):
     if membership is None and user.role != "ta":
         return jsonify(error="not a member of this group"), 403
 
-    worksheet = Worksheet.query.get(worksheet_id)
-    if worksheet is None:
-        return jsonify(error="assignment not found"), 404
-    if user.role != "ta" and not worksheet.is_published:
-        return jsonify(error="this assignment hasn't been released yet"), 403
+    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    if error:
+        return error
 
     if membership is not None:
         membership.last_seen_at = utcnow()
@@ -153,6 +172,10 @@ def get_group_work(group_id, worksheet_id):
         if error:
             return error
 
+    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    if error:
+        return error
+
     return jsonify(**serializers.build_group_work(group, worksheet_id, user))
 
 
@@ -176,6 +199,10 @@ def practice_run(group_id, worksheet_id, question_id):
     user = get_current_user()
     if _membership(group_id, user.id) is None:
         return jsonify(error="not a member of this group"), 403
+
+    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    if error:
+        return error
 
     question = Question.query.filter_by(id=question_id, worksheet_id=worksheet_id).first()
     if question is None:
@@ -233,6 +260,10 @@ def update_code(group_id):
         return jsonify(error="worksheet_id is required"), 400
 
     user = get_current_user()
+    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    if error:
+        return error
+
     progress = _get_or_create_progress(group, worksheet_id)
     if progress.typist_user_id != user.id:
         return jsonify(error="only the current typist can edit the code"), 403
@@ -270,6 +301,10 @@ def update_scratch_code(group_id):
     if _membership(group_id, user.id) is None:
         return jsonify(error="not a member of this group"), 403
 
+    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    if error:
+        return error
+
     progress = _get_or_create_progress(group, worksheet_id)
     question = serializers.current_question(worksheet_id, progress.current_question_index)
     if question is None:
@@ -306,6 +341,10 @@ def give_up_typist_route(group_id):
     if _membership(group_id, user.id) is None:
         return jsonify(error="not a member of this group"), 403
 
+    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    if error:
+        return error
+
     if GroupMembership.query.filter_by(group_id=group_id).count() <= 1:
         return jsonify(error="you're the only person in this group — there's no one to give the pen to"), 409
 
@@ -329,6 +368,10 @@ def submit_attempt(group_id):
         return jsonify(error="worksheet_id is required"), 400
 
     user = get_current_user()
+    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    if error:
+        return error
+
     progress = _get_or_create_progress(group, worksheet_id)
     if progress.typist_user_id != user.id:
         return jsonify(error="only the current typist can run an attempt"), 403
@@ -381,6 +424,10 @@ def submit_rating(group_id):
     if _membership(group_id, user.id) is None:
         return jsonify(error="not a member of this group"), 403
 
+    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    if error:
+        return error
+
     progress = _get_or_create_progress(group, worksheet_id)
     question = serializers.current_question(worksheet_id, progress.current_question_index)
     if question is None:
@@ -416,6 +463,10 @@ def advance(group_id):
     user = get_current_user()
     if _membership(group_id, user.id) is None:
         return jsonify(error="not a member of this group"), 403
+
+    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    if error:
+        return error
 
     progress = _get_or_create_progress(group, worksheet_id)
     question = serializers.current_question(worksheet_id, progress.current_question_index)
@@ -454,6 +505,10 @@ def force_advance(group_id):
     if _membership(group_id, user.id) is None:
         return jsonify(error="not a member of this group"), 403
 
+    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    if error:
+        return error
+
     progress = _get_or_create_progress(group, worksheet_id)
     question = serializers.current_question(worksheet_id, progress.current_question_index)
     if question is None:
@@ -480,6 +535,10 @@ def get_solution(group_id):
     if worksheet_id is None:
         return jsonify(error="worksheet_id query param is required"), 400
 
+    error = _worksheet_for_group_or_error(group, worksheet_id, get_current_user())
+    if error:
+        return error
+
     progress = _get_or_create_progress(group, worksheet_id)
     question = serializers.current_question(worksheet_id, progress.current_question_index)
     if question is None:
@@ -503,6 +562,10 @@ def run_tests(group_id):
     user = get_current_user()
     if _membership(group_id, user.id) is None:
         return jsonify(error="not a member of this group"), 403
+
+    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    if error:
+        return error
 
     source = data.get("source")
     if source not in ("shared", "scratch"):
@@ -602,6 +665,10 @@ def get_detail(group_id):
     if worksheet_id is None:
         return jsonify(error="worksheet_id query param is required"), 400
 
+    error = _worksheet_for_group_or_error(group, worksheet_id, get_current_user())
+    if error:
+        return error
+
     progress = _get_or_create_progress(group, worksheet_id)
     question = serializers.current_question(worksheet_id, progress.current_question_index)
     state = GroupQuestionState.query.filter_by(group_id=group.id, question_id=question.id).first() if question else None
@@ -623,6 +690,10 @@ def release_typist_route(group_id):
     worksheet_id = _worksheet_id_from_body(data)
     if worksheet_id is None:
         return jsonify(error="worksheet_id is required"), 400
+
+    error = _worksheet_for_group_or_error(group, worksheet_id, get_current_user())
+    if error:
+        return error
 
     progress = _get_or_create_progress(group, worksheet_id)
     typist_service.release_typist(progress, group_id)
