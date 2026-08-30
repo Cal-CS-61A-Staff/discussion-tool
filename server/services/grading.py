@@ -48,6 +48,15 @@ def run_grader(question, code):
     report to the caller, not an exceptional one.
     """
     with tempfile.TemporaryDirectory(prefix="grader-submission-") as tmp_dir:
+        # tempfile.TemporaryDirectory defaults to 0700 (owner-only), which
+        # only works if the container's "root" is really host root. Some
+        # Docker setups (e.g. userns-remap, rootless) map container root to
+        # an unprivileged host UID, which would otherwise get "Permission
+        # denied" reading this bind mount even running as root in run.sh.
+        # World-readable is fine here: this dir holds only the student's
+        # own submitted code, not a secret, and it's gone the moment this
+        # `with` block exits.
+        os.chmod(tmp_dir, 0o755)
         _write(tmp_dir, "student_code.py", code)
         _write(tmp_dir, "setup_code.py", question.setup_code or "")
         _write(tmp_dir, "test_code.py", question.test_code or "")
@@ -126,8 +135,10 @@ def _wait_and_collect(container_name):
 
 
 def _write(tmp_dir, filename, content):
-    with open(os.path.join(tmp_dir, filename), "w") as f:
+    path = os.path.join(tmp_dir, filename)
+    with open(path, "w") as f:
         f.write(content)
+    os.chmod(path, 0o644)
 
 
 def _error_result(message):
