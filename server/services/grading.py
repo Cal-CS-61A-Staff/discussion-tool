@@ -90,7 +90,7 @@ def run_grader(question, code):
 
 def _wait_and_collect(container_name):
     try:
-        subprocess.run(
+        wait_result = subprocess.run(
             ["docker", "wait", container_name],
             capture_output=True,
             text=True,
@@ -112,7 +112,17 @@ def _wait_and_collect(container_name):
     try:
         return json.loads(logs.stdout.strip())
     except (ValueError, AttributeError):
-        return _error_result("Grading produced no readable output.")
+        # exit code + stderr are the only lead when the container crashed
+        # before ever printing its result JSON (e.g. `run.sh`'s `set -e`
+        # exiting on a failed setup step) — surfacing them turns a dead-end
+        # "no output" into something actually diagnosable instead of
+        # guesswork.
+        exit_code = wait_result.stdout.strip() if wait_result.stdout else "?"
+        detail = logs.stderr.strip() if logs.stderr else ""
+        message = f"Grading produced no readable output (container exit code: {exit_code})."
+        if detail:
+            message += f" stderr: {detail[:500]}"
+        return _error_result(message)
 
 
 def _write(tmp_dir, filename, content):
