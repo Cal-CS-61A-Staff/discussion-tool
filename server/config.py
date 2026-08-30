@@ -21,8 +21,14 @@ class Config:
     MAX_GROUP_SIZE = 4
 
     # Per-user autograder rate limit (separate from COOLDOWN_SECONDS above,
-    # which is group-wide and specific to the predict/run flow).
-    GRADER_COOLDOWN_SECONDS = 10
+    # which is group-wide and specific to the predict/run flow). Escalates
+    # the more a user runs in quick succession — 10s normally, stepping up
+    # every GRADER_COOLDOWN_STEP_TRIES tries, capped at the last entry — so
+    # someone spamming "Run tests" gets throttled harder over time instead
+    # of a flat wait that's either too lenient for abuse or too strict for
+    # normal use (see server/services/grader_cooldown.py).
+    GRADER_COOLDOWN_STEPS = [10, 30, 60, 120, 180]
+    GRADER_COOLDOWN_STEP_TRIES = 3
     GRADER_IMAGE = os.environ.get("GRADER_IMAGE", "discussion-grader:latest")
     GRADER_CONTAINER_TIMEOUT_SECONDS = 15
     GRADER_DOCKER_CLI_TIMEOUT_SECONDS = 10

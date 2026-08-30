@@ -154,7 +154,7 @@ def build_group_state(group, progress, user, state):
         },
         "grader_cooldown": {
             "remaining_seconds": grader_cooldown_service.remaining_seconds(user),
-            "cooldown_seconds": Config.GRADER_COOLDOWN_SECONDS,
+            "cooldown_seconds": grader_cooldown_service.cooldown_seconds_for(user),
         },
         "members": member_payload,
         "my_rating_value": my_rating,

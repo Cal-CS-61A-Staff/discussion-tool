@@ -4,7 +4,6 @@ import random
 from flask import Blueprint, jsonify, request
 
 from server.auth import get_current_user, login_required, require_section_access, role_required
-from server.config import Config
 from server.extensions import db
 from server.models.attempt import Attempt
 from server.models.group import Group, GroupAssignmentProgress, GroupMembership, GroupQuestionState, ScratchCode
@@ -199,7 +198,7 @@ def practice_run(group_id, worksheet_id, question_id):
             jsonify(
                 error="cooldown active",
                 remaining_seconds=grader_cooldown_service.remaining_seconds(user),
-                cooldown_seconds=Config.GRADER_COOLDOWN_SECONDS,
+                cooldown_seconds=grader_cooldown_service.cooldown_seconds_for(user),
             ),
             429,
         )
@@ -216,7 +215,7 @@ def practice_run(group_id, worksheet_id, question_id):
     db.session.add(test_run)
     db.session.commit()
 
-    grading_queue_service.enqueue_grading_job(test_run.id, None, Config.GRADER_COOLDOWN_SECONDS)
+    grading_queue_service.enqueue_grading_job(test_run.id, None, grader_cooldown_service.cooldown_seconds_for(user))
 
     return jsonify(test_run_id=test_run.id, status="pending"), 202
 
@@ -530,7 +529,7 @@ def run_tests(group_id):
             jsonify(
                 error="cooldown active",
                 remaining_seconds=grader_cooldown_service.remaining_seconds(user),
-                cooldown_seconds=Config.GRADER_COOLDOWN_SECONDS,
+                cooldown_seconds=grader_cooldown_service.cooldown_seconds_for(user),
             ),
             429,
         )
@@ -564,7 +563,9 @@ def run_tests(group_id):
     # concurrency". The frontend polls GET .../run-tests/:id below for the
     # result, which lands in the exact same shape this endpoint used to
     # return synchronously.
-    grading_queue_service.enqueue_grading_job(test_run.id, prediction_feedback, Config.GRADER_COOLDOWN_SECONDS)
+    grading_queue_service.enqueue_grading_job(
+        test_run.id, prediction_feedback, grader_cooldown_service.cooldown_seconds_for(user)
+    )
 
     return jsonify(test_run_id=test_run.id, status="pending"), 202
 

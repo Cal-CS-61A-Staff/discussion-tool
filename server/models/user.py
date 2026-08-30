@@ -26,3 +26,7 @@ class User(db.Model):
     # separate from the group-wide predict/run cooldown, since spinning up a
     # container is a heavier operation and scratch-editor runs are personal.
     last_grader_run_at = db.Column(db.DateTime, nullable=True)
+    # Consecutive-tries counter behind the escalating cooldown
+    # (server/services/grader_cooldown.py) — resets to 0 once the user's
+    # been idle long enough that this no longer counts as the same streak.
+    grader_run_streak = db.Column(db.Integer, default=0, nullable=False)
