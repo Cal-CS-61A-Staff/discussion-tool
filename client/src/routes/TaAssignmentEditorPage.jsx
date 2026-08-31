@@ -449,6 +449,7 @@ export default function TaAssignmentEditorPage() {
                 <div className="panel">
                   <div className="panel-heading">
                     <h4>Problem code</h4>
+                    <span style={{ fontSize: 11, color: 'var(--muted)' }}>Shown to students</span>
                   </div>
                   <div className="panel-body">
                     {form.gradingMode === 'doctest' && (
@@ -463,8 +464,11 @@ export default function TaAssignmentEditorPage() {
                       onChange={(v) => setForm((f) => ({ ...f, starterCode: v }))}
                       editorLabel="problem code"
                     />
-                    <div className="form-group" style={{ marginTop: 12, marginBottom: 0 }}>
+                    <div className="form-group" style={{ marginTop: 16, marginBottom: 0 }}>
                       <label htmlFor="qSetup">Setup code (optional)</label>
+                      <p style={{ fontSize: 12, color: 'var(--muted)', margin: '2px 0 6px' }}>
+                        Define any classes, helper functions, or imports here (not shown to students).
+                      </p>
                       <textarea
                         id="qSetup"
                         className="form-control code"
