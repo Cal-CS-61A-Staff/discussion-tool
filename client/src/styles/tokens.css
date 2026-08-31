@@ -341,7 +341,7 @@ a:hover {
 }
 .course-card-footer {
   padding: 10px 14px;
-  background: var(--ink);
+  background: var(--brand);
   color: #fff;
   font-size: 13px;
   font-weight: 600;

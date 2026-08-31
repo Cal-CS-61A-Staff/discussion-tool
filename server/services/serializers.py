@@ -43,6 +43,37 @@ def _group_response(group_id, question_id):
     return answer, row.is_correct
 
 
+def group_prediction_item(question, group_id):
+    """The prediction item this group drew — {index, code, expected} — from
+    GroupQuestionState.predict_example_json (see
+    server/blueprints/groups.py:_get_or_create_state), or None."""
+    if (question.problem_type or "coding") != "prediction":
+        return None
+    state = GroupQuestionState.query.filter_by(group_id=group_id, question_id=question.id).first()
+    idx = None
+    if state and state.predict_example_json:
+        try:
+            idx = json.loads(state.predict_example_json).get("prediction_item")
+        except (ValueError, AttributeError):
+            idx = None
+    items = response_grading.parse_content(question).get("items") or []
+    if not isinstance(idx, int) or not 0 <= idx < len(items):
+        return None
+    return {"index": idx, **items[idx]}
+
+
+def _prediction_public_content(question, group_id):
+    """What the student sees for a prediction question: the shared setup and
+    the drawn item's CODE — never any expected output."""
+    content = response_grading.parse_content(question)
+    item = group_prediction_item(question, group_id)
+    return {
+        "setup": content.get("setup", ""),
+        "item_count": len(content.get("items") or []),
+        "item": {"index": item["index"], "code": item["code"]} if item else None,
+    }
+
+
 def build_group_state(group, progress, user, state):
     # A group can have several worksheets in flight independently (each
     # gets its own GroupAssignmentProgress/typist) — the title is here so
@@ -70,7 +101,9 @@ def build_group_state(group, progress, user, state):
     my_scratch = ScratchCode.query.filter_by(group_id=group.id, question_id=question.id, user_id=user.id).first()
     predict_call = None
     if state.predict_example_json:
-        predict_call = json.loads(state.predict_example_json)["call"]
+        # A 'prediction' question stashes {"prediction_item": idx} here
+        # instead of a {call, expected} pair — no predict_call for those.
+        predict_call = json.loads(state.predict_example_json).get("call")
 
     members = GroupMembership.query.options(joinedload(GroupMembership.user)).filter_by(group_id=group.id).all()
     stale_cutoff = utcnow() - timedelta(seconds=Config.TYPIST_STALE_SECONDS)
@@ -157,7 +190,11 @@ def build_group_state(group, progress, user, state):
             # non-code answer widget on the client. `content` here is the
             # answer-stripped public view (see response_grading).
             "problem_type": question.problem_type or "coding",
-            "content": response_grading.public_content(question),
+            "content": (
+                _prediction_public_content(question, group.id)
+                if (question.problem_type or "coding") == "prediction"
+                else response_grading.public_content(question)
+            ),
             # expected_output is deliberately withheld here (only surfaces
             # in last_attempt once someone has actually run it) — the same
             # hygiene now applies to solution_markdown (never included in
@@ -479,9 +516,11 @@ def _predict_call_for(group, question):
     that was unlocked but never actually made current, which shouldn't
     normally happen but isn't worth a hard failure over.
     """
+    if (question.problem_type or "coding") != "coding":
+        return None
     state = GroupQuestionState.query.filter_by(group_id=group.id, question_id=question.id).first()
     if state is not None and state.predict_example_json:
-        return json.loads(state.predict_example_json)["call"]
+        return json.loads(state.predict_example_json).get("call")
     examples = extract_predict_examples_for_question(question)
     return examples[0]["call"] if examples else None
 
@@ -539,7 +578,11 @@ def build_group_work(group, worksheet_id, user):
                 "prompt": question.prompt,
                 "grading_mode": question.grading_mode,
                 "problem_type": question.problem_type or "coding",
-                "content": response_grading.public_content(question),
+                "content": (
+                    _prediction_public_content(question, group.id)
+                    if (question.problem_type or "coding") == "prediction"
+                    else response_grading.public_content(question)
+                ),
                 "group_response": group_answer,
                 "group_response_correct": group_answer_correct,
                 "code": latest_run.code_snapshot if latest_run else None,

@@ -232,6 +232,7 @@ export default function ClassSectionsPage() {
                           {tas.map((t) => (
                             <option key={t.id} value={t.id}>
                               {t.display_name}
+                              {t.role === 'admin' ? ' (admin)' : ''}
                               {t.email ? ` — ${t.email}` : ''}
                             </option>
                           ))}

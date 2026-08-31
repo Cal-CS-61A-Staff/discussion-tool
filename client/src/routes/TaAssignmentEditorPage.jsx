@@ -17,9 +17,9 @@ const NEW_SLIDE_ID = 'new';
 // <select> value — it's mapped to/from {problemType, gradingMode} at the
 // edges. See server/services/response_grading.py for each widget's config.
 const PROBLEM_TYPE_OPTIONS = [
-  { key: 'coding_simple', label: 'Coding — Simple (call → expected value)', problemType: 'coding', gradingMode: 'simple' },
   { key: 'coding_doctest', label: 'Coding — Doctest (docstring >>> examples)', problemType: 'coding', gradingMode: 'doctest' },
   { key: 'coding_pltest', label: 'Coding — Custom test code', problemType: 'coding', gradingMode: 'pltest' },
+  { key: 'prediction', label: 'Prediction (guess the output)', problemType: 'prediction', gradingMode: 'discussion' },
   { key: 'discussion', label: 'Discussion (no code)', problemType: 'coding', gradingMode: 'discussion' },
   { key: 'multiple_choice', label: 'Multiple Choice', problemType: 'multiple_choice', gradingMode: 'discussion' },
   { key: 'fill_blank_code', label: 'Fill in the Blank (Coding)', problemType: 'fill_blank_code', gradingMode: 'discussion' },
@@ -32,14 +32,25 @@ const PROBLEM_TYPE_OPTIONS = [
   { key: 'iframe', label: 'Iframe', problemType: 'iframe', gradingMode: 'discussion' },
 ];
 
+// 'Simple' coding mode is retired — not offered for new questions, but a
+// legacy question already on it stays editable (and keeps saving as simple)
+// via this hidden option, appended to the list only when it's in use.
+const LEGACY_SIMPLE_OPTION = {
+  key: 'coding_simple',
+  label: 'Coding — Simple (legacy call → expected)',
+  problemType: 'coding',
+  gradingMode: 'simple',
+};
+
 // key -> the {problem_type, grading_mode} pair the form/API works in.
-const typeKeyToForm = (key) => PROBLEM_TYPE_OPTIONS.find((o) => o.key === key) || PROBLEM_TYPE_OPTIONS[0];
+const typeKeyToForm = (key) =>
+  [...PROBLEM_TYPE_OPTIONS, LEGACY_SIMPLE_OPTION].find((o) => o.key === key) || PROBLEM_TYPE_OPTIONS[0];
 // and back: derive the dropdown value from a loaded question's two fields.
 const formToTypeKey = (problemType, gradingMode) =>
   problemType === 'coding'
     ? gradingMode === 'discussion'
       ? 'discussion'
-      : `coding_${gradingMode || 'simple'}`
+      : `coding_${gradingMode || 'doctest'}`
     : problemType;
 
 // The preview badge just needs a quick at-a-glance tag, not the full
@@ -49,6 +60,7 @@ const PROBLEM_TYPE_SHORT_LABELS = {
   coding_simple: 'Simple',
   coding_doctest: 'Doctest',
   coding_pltest: 'Custom test',
+  prediction: 'Prediction',
   discussion: 'No code',
   multiple_choice: 'Multiple choice',
   fill_blank_code: 'Fill blank (code)',
@@ -76,7 +88,7 @@ const blankForm = {
   title: '',
   problemType: 'coding',
   content: {},
-  gradingMode: 'simple',
+  gradingMode: 'doctest',
   prompt: '',
   starterCode: '',
   setupCode: '',
@@ -152,7 +164,7 @@ export default function TaAssignmentEditorPage() {
       title: q.title,
       problemType: q.problem_type || 'coding',
       content: q.content || {},
-      gradingMode: q.grading_mode || 'simple',
+      gradingMode: q.grading_mode || 'doctest',
       prompt: q.prompt,
       starterCode: q.starter_code || '',
       setupCode: q.setup_code || '',
@@ -412,7 +424,10 @@ export default function TaAssignmentEditorPage() {
                       }
                       style={{ maxWidth: 320 }}
                     >
-                      {PROBLEM_TYPE_OPTIONS.map((o) => (
+                      {(formToTypeKey(form.problemType, form.gradingMode) === 'coding_simple'
+                        ? [...PROBLEM_TYPE_OPTIONS, LEGACY_SIMPLE_OPTION]
+                        : PROBLEM_TYPE_OPTIONS
+                      ).map((o) => (
                         <option key={o.key} value={o.key}>
                           {o.label}
                         </option>
@@ -421,6 +436,12 @@ export default function TaAssignmentEditorPage() {
                     {isCoding && (
                       <p style={{ fontSize: 12, color: 'var(--muted)', margin: '6px 0 0' }}>
                         {GRADING_MODE_HINTS[form.gradingMode]}
+                      </p>
+                    )}
+                    {form.problemType === 'prediction' && (
+                      <p style={{ fontSize: 12, color: 'var(--muted)', margin: '6px 0 0' }}>
+                        Students are shown one randomly-chosen snippet from your suite and predict its output; it&apos;s
+                        marked right if their prediction matches what the code actually prints in the sandbox.
                       </p>
                     )}
                   </div>

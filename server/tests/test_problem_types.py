@@ -14,6 +14,7 @@ from server.models.section import Section
 from server.models.user import User
 from server.models.worksheet import Question, Worksheet
 from server.services import advance as advance_service
+from server.services import response_grading
 from server.tests.conftest import login_as
 
 
@@ -220,3 +221,80 @@ def test_worksheet_grades_count_a_correct_multiple_choice(app, client):
     row = next(r for r in resp.get_json()["groups"] if r["group_id"] == gid)
     assert row["questions_attempted"] == 1
     assert row["questions_passed"] == 1
+
+
+# --- prediction questions -------------------------------------------------
+
+DOCTEST_BLOCK = ">>> 1 + 1\n2\n>>> sorted([3, 1, 2])\n[1, 2, 3]\n"
+
+
+def _make_prediction_question(worksheet_id, doctest_text=DOCTEST_BLOCK, setup=""):
+    clean, err = response_grading.validate_content("prediction", {"setup": setup, "doctest": doctest_text})
+    assert err is None, err
+    q = Question(
+        worksheet_id=worksheet_id,
+        order_index=0,
+        title="Predict",
+        prompt="what prints?",
+        problem_type="prediction",
+        grading_mode="discussion",
+        content_json=json.dumps(clean),
+    )
+    db.session.add(q)
+    db.session.commit()
+    return q
+
+
+def test_parse_prediction_items_splits_a_doctest_block():
+    items, err = response_grading.parse_prediction_items(DOCTEST_BLOCK)
+    assert err is None
+    assert items == [
+        {"code": "1 + 1", "expected": "2"},
+        {"code": "sorted([3, 1, 2])", "expected": "[1, 2, 3]"},
+    ]
+    _, err2 = response_grading.parse_prediction_items("no examples here")
+    assert err2 is not None
+
+
+def test_prediction_state_gives_one_item_without_the_answer(app, client):
+    s = _setup()
+    q = _make_prediction_question(s["worksheet"].id)
+
+    login_as(client, s["student"])
+    resp = client.get(f"/api/groups/{s['group'].id}/state?worksheet_id={s['worksheet'].id}")
+    assert resp.status_code == 200
+    content = resp.get_json()["question"]["content"]
+    assert content["item_count"] == 2
+    assert content["item"]["code"] in {"1 + 1", "sorted([3, 1, 2])"}
+    assert "expected" not in json.dumps(content)
+
+
+def test_prediction_grading_against_the_drawn_item(app, client):
+    s = _setup()
+    q = _make_prediction_question(s["worksheet"].id)
+    gid, wid = s["group"].id, s["worksheet"].id
+
+    login_as(client, s["student"])
+    # Draw the item (as the live page would by polling /state).
+    client.get(f"/api/groups/{gid}/state?worksheet_id={wid}")
+    from server.services import serializers
+
+    item = serializers.group_prediction_item(q, gid)
+    assert item is not None
+
+    url = f"/api/groups/{gid}/worksheets/{wid}/questions/{q.id}/response"
+    wrong = client.post(url, json={"response": "definitely not it"})
+    assert wrong.get_json()["is_correct"] is False
+
+    db.session.add(Rating(group_id=gid, question_id=q.id, user_id=s["student"].id, value=4))
+    db.session.commit()
+    assert advance_service.ready_to_advance(gid, q.id) is False
+
+    right = client.post(url, json={"response": item["expected"]})
+    assert right.get_json()["is_correct"] is True
+    assert advance_service.ready_to_advance(gid, q.id) is True
+
+
+def test_prediction_output_match_is_whitespace_tolerant(app):
+    assert response_grading.check_prediction("[1, 2, 3]", "  [1, 2, 3]  \n") is True
+    assert response_grading.check_prediction("2", "3") is False

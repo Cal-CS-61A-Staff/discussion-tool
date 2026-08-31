@@ -21,6 +21,7 @@ export const PROBLEM_TYPE_DEFAULT_CONTENT = {
   fill_blank_code: () => ({ template: '', blanks: [] }),
   fill_blank_markdown: () => ({ template: '', blanks: [] }),
   short_answer: () => ({ answer: '', accept: [], case_sensitive: false }),
+  prediction: () => ({ setup: '', doctest: '', items: [] }),
   text_markdown: () => ({}),
   plain_text: () => ({ min_length: 0 }),
   image: () => ({ url: '', alt: '', max_width: '' }),
@@ -214,6 +215,46 @@ export default function ProblemTypeEditor({ type, content, onChange }) {
           />
           Case-sensitive
         </label>
+      </>
+    );
+  }
+
+  if (type === 'prediction') {
+    const itemCount = (String(c.doctest || '').match(/^\s*>>>/gm) || []).length;
+    return (
+      <>
+        <div className="form-group">
+          <label htmlFor="pt-pred-setup">Setup code (optional)</label>
+          <p style={{ fontSize: 12, color: 'var(--muted)', margin: '2px 0 6px' }}>
+            Runs before every snippet. Hidden from students.
+          </p>
+          <textarea
+            id="pt-pred-setup"
+            className="form-control code"
+            rows={3}
+            value={c.setup || ''}
+            onChange={(e) => onChange({ ...c, setup: e.target.value })}
+          />
+        </div>
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label htmlFor="pt-pred-doctest">Prediction items</label>
+          <p style={{ fontSize: 12, color: 'var(--muted)', margin: '2px 0 6px' }}>
+            One <code className="code">&gt;&gt;&gt;</code> example per item, with its expected output on the line(s)
+            below — just like a doctest. Students are shown the code for one randomly-chosen item and predict its
+            output; the expected values are checked against the sandbox when you save and never shown to students.
+          </p>
+          <textarea
+            id="pt-pred-doctest"
+            className="form-control code"
+            rows={8}
+            value={c.doctest || ''}
+            onChange={(e) => onChange({ ...c, doctest: e.target.value })}
+            placeholder={'>>> 1 + 1\n2\n>>> sorted([3, 1, 2])\n[1, 2, 3]'}
+          />
+          <p style={{ fontSize: 12, color: 'var(--muted)', margin: '6px 0 0' }}>
+            {itemCount} prediction item{itemCount === 1 ? '' : 's'} detected.
+          </p>
+        </div>
       </>
     );
   }

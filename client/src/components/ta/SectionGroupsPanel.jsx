@@ -1,5 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
-import GroupHistoryPanel from './GroupHistoryPanel.jsx';
+import { useEffect, useState } from 'react';
 import * as sectionsApi from '../../api/sections.js';
 
 export default function SectionGroupsPanel({ sectionId }) {
@@ -11,7 +10,6 @@ export default function SectionGroupsPanel({ sectionId }) {
   const [editingId, setEditingId] = useState(null);
   const [editingName, setEditingName] = useState('');
   const [busyGroupId, setBusyGroupId] = useState(null);
-  const [historyExpandedId, setHistoryExpandedId] = useState(null);
   const [adding, setAdding] = useState(false);
 
   const load = () => {
@@ -99,10 +97,8 @@ export default function SectionGroupsPanel({ sectionId }) {
             {groups.map((g) => {
               const editing = editingId === g.group_id;
               const busy = busyGroupId === g.group_id;
-              const historyExpanded = historyExpandedId === g.group_id;
               return (
-                <Fragment key={g.group_id}>
-                <tr>
+                <tr key={g.group_id}>
                   <td>{g.number}</td>
                   <td>
                     {editing ? (
@@ -165,16 +161,6 @@ export default function SectionGroupsPanel({ sectionId }) {
                     )}
                     <a
                       href="/"
-                      className="admin-action"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        setHistoryExpandedId(historyExpanded ? null : g.group_id);
-                      }}
-                    >
-                      History
-                    </a>
-                    <a
-                      href="/"
                       className="admin-action admin-action-danger"
                       onClick={(e) => {
                         e.preventDefault();
@@ -185,14 +171,6 @@ export default function SectionGroupsPanel({ sectionId }) {
                     </a>
                   </td>
                 </tr>
-                {historyExpanded && (
-                  <tr>
-                    <td colSpan={6} style={{ background: 'var(--bg-subtle, #f7f8f9)' }}>
-                      <GroupHistoryPanel groupId={g.group_id} />
-                    </td>
-                  </tr>
-                )}
-                </Fragment>
               );
             })}
             {groups.length === 0 && (

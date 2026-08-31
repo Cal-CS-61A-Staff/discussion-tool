@@ -15,25 +15,57 @@ question types (Question.problem_type != 'coding').
   plain_text          {"min_length": int}     (free response, stored, never checked)
   image               {"url": str, "alt": str, "max_width": int}
   iframe              {"url": str, "height": int}
+  prediction          {"setup": str, "doctest": str,      -- raw TA input
+                        "items": [{"code": str, "expected": str}, ...]}
+                       -- items parsed from `doctest` on save and verified
+                          in the sandbox; one is drawn at random per group
+                          (GroupQuestionState.predict_example_json holds the
+                          chosen index) and the student predicts its output.
 
 The student's stored `response_json` shape by type:
   choice types        list[int]   selected option indices
   fill blank types    list[str]   one string per blank, in order
   short_answer        str
   plain_text          str
+  prediction          str         the predicted program output
 """
 
+import doctest
 import json
 import re
 
 CHOICE_TYPES = {"multiple_choice", "dropdown"}
 FILL_BLANK_TYPES = {"fill_blank_code", "fill_blank_markdown"}
 DISPLAY_TYPES = {"text_markdown", "image", "iframe", "plain_text"}
-GRADEABLE_TYPES = CHOICE_TYPES | FILL_BLANK_TYPES | {"short_answer"}
+GRADEABLE_TYPES = CHOICE_TYPES | FILL_BLANK_TYPES | {"short_answer", "prediction"}
 NONCODE_TYPES = GRADEABLE_TYPES | DISPLAY_TYPES
 ALL_PROBLEM_TYPES = {"coding"} | NONCODE_TYPES
 
 BLANK_MARKER = re.compile(r"\[\[(\d+)\]\]")
+
+
+def parse_prediction_items(doctest_text):
+    """A block of >>> examples -> [{"code", "expected"}]. Mirrors
+    server/services/predict_examples.py:_examples_from_docstrings — a run
+    of >>> lines shares one REPL session, so each emitted item carries
+    every preceding source line (setup assignments etc.) plus the line
+    whose output is shown. Returns (items, error_message_or_None).
+    """
+    try:
+        examples = doctest.DocTestParser().get_examples(doctest_text or "")
+    except ValueError as exc:
+        return None, f"couldn't parse the >>> examples: {exc}"
+
+    items = []
+    accumulated = []
+    for ex in examples:
+        accumulated.append(ex.source.rstrip("\n"))
+        if ex.want.strip():
+            items.append({"code": "\n".join(accumulated), "expected": ex.want.rstrip("\n")})
+            accumulated = []  # each item is independent — don't carry lines forward
+    if not items:
+        return None, "add at least one >>> example with its expected output on the next line"
+    return items, None
 
 
 def parse_content(question):
@@ -75,7 +107,7 @@ def is_auto_checkable(question):
     (so a correct group answer gates advancing). A short_answer with no
     model answer is a prompt, not a graded question."""
     ptype = getattr(question, "problem_type", "coding")
-    if ptype in CHOICE_TYPES or ptype in FILL_BLANK_TYPES:
+    if ptype in CHOICE_TYPES or ptype in FILL_BLANK_TYPES or ptype == "prediction":
         return True
     if ptype == "short_answer":
         content = parse_content(question)
@@ -83,12 +115,34 @@ def is_auto_checkable(question):
     return False
 
 
-def check_response(question, response):
+def normalize_output(text):
+    """Loose match for predicted vs actual program output — ignore
+    leading/trailing whitespace on each line and blank lines at the ends
+    (a student shouldn't fail for a stray leading space)."""
+    lines = [ln.strip() for ln in str(text or "").splitlines()]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines)
+
+
+def check_prediction(expected, response):
+    return normalize_output(response) == normalize_output(expected)
+
+
+def check_response(question, response, *, prediction_expected=None):
     """Returns True/False for auto-checkable questions, or None when the
-    type isn't graded (display types, ungraded short_answer/plain_text)."""
+    type isn't graded (display types, ungraded short_answer/plain_text).
+    `prediction_expected` is the drawn item's verified output — the caller
+    resolves it from the group's GroupQuestionState."""
     ptype = getattr(question, "problem_type", "coding")
     if not is_auto_checkable(question):
         return None
+    if ptype == "prediction":
+        if prediction_expected is None:
+            return None
+        return check_prediction(prediction_expected, response)
     content = parse_content(question)
 
     if ptype in CHOICE_TYPES:
@@ -152,6 +206,12 @@ def public_content(question):
 
     if ptype == "iframe":
         return {"url": content.get("url", ""), "height": content.get("height") or 400}
+
+    if ptype == "prediction":
+        # The chosen item's code is spliced in per-group by the serializer
+        # (it needs GroupQuestionState); here we only expose the shared
+        # setup and the item count. Never the expected outputs.
+        return {"setup": content.get("setup", ""), "item_count": len(content.get("items") or [])}
 
     return {}  # text_markdown
 
@@ -248,5 +308,15 @@ def validate_content(problem_type, content):
         except (TypeError, ValueError):
             height = 400
         return {"url": url, "height": max(100, height)}, None
+
+    if problem_type == "prediction":
+        setup = content.get("setup") or ""
+        doctest_text = content.get("doctest") or ""
+        items, err = parse_prediction_items(doctest_text)
+        if err:
+            return None, err
+        # The parsed `expected` values are re-verified against the sandbox
+        # by server/blueprints/admin.py before the save is accepted.
+        return {"setup": setup, "doctest": doctest_text, "items": items}, None
 
     return None, f"unknown problem_type: {problem_type}"

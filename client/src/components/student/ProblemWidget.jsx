@@ -11,7 +11,14 @@ import { useEffect, useMemo, useState } from 'react';
  * exist in both.
  */
 
-const GRADED_TYPES = new Set(['multiple_choice', 'dropdown', 'fill_blank_code', 'fill_blank_markdown', 'short_answer']);
+const GRADED_TYPES = new Set([
+  'multiple_choice',
+  'dropdown',
+  'fill_blank_code',
+  'fill_blank_markdown',
+  'short_answer',
+  'prediction',
+]);
 
 const BLANK_MARKER = /\[\[(\d+)\]\]/g;
 
@@ -182,6 +189,39 @@ export default function ProblemWidget({ problemType, content, response, response
         onChange={(e) => update(e.target.value)}
         placeholder="Your answer"
       />
+    );
+  } else if (type === 'prediction') {
+    // Live page: content.item is the drawn snippet. Editor preview: fall
+    // back to the first authored item so there's something to show.
+    const item =
+      content?.item ||
+      (Array.isArray(content?.items) && content.items[0] ? { index: 0, code: content.items[0].code } : null);
+    field = (
+      <div>
+        {content?.setup ? (
+          <pre className="code-editor-wrap" style={{ padding: 10, margin: '0 0 8px', color: '#eee' }}>
+            <code className="code">{content.setup}</code>
+          </pre>
+        ) : null}
+        {item ? (
+          <pre className="code-editor-wrap" style={{ padding: 10, margin: 0, color: '#eee' }}>
+            <code className="code">{item.code}</code>
+          </pre>
+        ) : (
+          <p style={{ color: 'var(--muted)', fontSize: 13 }}>Preparing your prediction…</p>
+        )}
+        <div className="form-group" style={{ marginTop: 10, marginBottom: 0 }}>
+          <label>What does this display?</label>
+          <textarea
+            className="form-control code"
+            rows={3}
+            value={draft}
+            disabled={readOnly || !item}
+            onChange={(e) => update(e.target.value)}
+            placeholder="Type the exact output"
+          />
+        </div>
+      </div>
     );
   } else if (type === 'plain_text') {
     field = (

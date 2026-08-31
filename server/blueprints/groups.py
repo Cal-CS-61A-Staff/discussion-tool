@@ -86,8 +86,14 @@ def _get_or_create_progress(group, worksheet_id):
 def _get_or_create_state(group, question):
     state = GroupQuestionState.query.filter_by(group_id=group.id, question_id=question.id).first()
     if state is None:
-        examples = extract_predict_examples_for_question(question)
-        predict_example = random.choice(examples) if examples else None
+        if (question.problem_type or "coding") == "prediction":
+            # Draw one item from the instructor's suite, fixed for this
+            # group from here on — predict_example_json holds the index.
+            items = response_grading.parse_content(question).get("items") or []
+            predict_example = {"prediction_item": random.randrange(len(items))} if items else None
+        else:
+            examples = extract_predict_examples_for_question(question)
+            predict_example = random.choice(examples) if examples else None
         state = GroupQuestionState(
             group_id=group.id,
             question_id=question.id,
@@ -239,7 +245,7 @@ def practice_run(group_id, worksheet_id, question_id):
     if prediction:
         state = _get_or_create_state(group, question)
         if state.predict_example_json:
-            predict_call = json.loads(state.predict_example_json)["call"]
+            predict_call = json.loads(state.predict_example_json).get("call")
 
     test_run = TestRun(
         group_id=group.id,
@@ -511,10 +517,12 @@ def submit_rating(group_id):
 @login_required
 def submit_response(group_id, worksheet_id, question_id):
     """The group's shared answer to a non-code question (multiple choice,
-    dropdown, fill-in-the-blank, short answer, plain text). One row per
-    (group, question) — any member submits or edits it, last write wins,
-    mirroring the shared code editor. For auto-checkable types a correct
-    answer here is what gates advancing (server/services/advance.py).
+    dropdown, fill-in-the-blank, short answer, plain text, prediction). One
+    row per (group, question) — any member submits or edits it, last write
+    wins, mirroring the shared code editor. For auto-checkable types a
+    correct answer here is what gates advancing (server/services/advance.py).
+    For a prediction question, correctness is measured against the
+    sandbox-verified output of the item this group was randomly assigned.
     """
     group = _load_group(group_id)
     if group is None:
@@ -541,7 +549,17 @@ def submit_response(group_id, worksheet_id, question_id):
 
     data = request.get_json(silent=True) or {}
     response = data.get("response")
-    is_correct = response_grading.check_response(question, response)
+    # For a prediction question, correctness is against the sandbox-verified
+    # output of the specific item this group drew — ensure the draw exists
+    # (normally already made when the group first polled /state).
+    if (question.problem_type or "coding") == "prediction":
+        _get_or_create_state(group, question)
+    prediction_item = serializers.group_prediction_item(question, group.id)
+    is_correct = response_grading.check_response(
+        question,
+        response,
+        prediction_expected=prediction_item["expected"] if prediction_item else None,
+    )
 
     row = QuestionResponse.query.filter_by(group_id=group.id, question_id=question.id).first()
     if row is None:
@@ -712,7 +730,7 @@ def run_tests(group_id):
     state = _get_or_create_state(group, question)
     predict_call = None
     if state.predict_example_json:
-        predict_call = json.loads(state.predict_example_json)["call"]
+        predict_call = json.loads(state.predict_example_json).get("call")
 
     test_run = TestRun(
         group_id=group.id,

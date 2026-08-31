@@ -36,9 +36,18 @@ MAX_GROUPS_PER_CREATE_CALL = 50
 @admin_bp.get("/tas")
 @admin_required
 def list_tas():
-    """Admin-only — populates the "assign a TA to this section" control."""
-    tas = User.query.filter_by(role="ta").order_by(User.display_name).all()
-    return jsonify(tas=[{"id": t.id, "display_name": t.display_name, "email": t.email} for t in tas])
+    """Admin-only — populates the "assign a TA to this section" control.
+    Admins can also run a section, so they're offered as choices alongside
+    plain TAs.
+    """
+    tas = (
+        User.query.filter(User.role.in_(("ta", "admin")))
+        .order_by(User.display_name)
+        .all()
+    )
+    return jsonify(
+        tas=[{"id": t.id, "display_name": t.display_name, "email": t.email, "role": t.role} for t in tas]
+    )
 
 
 @admin_bp.put("/sections/<int:section_id>/ta")
@@ -56,8 +65,8 @@ def assign_section_ta(section_id):
         section.ta_user_id = None
     else:
         ta = User.query.get(ta_user_id)
-        if ta is None or ta.role != "ta":
-            return jsonify(error="ta_user_id must be an existing user with the 'ta' role"), 400
+        if ta is None or ta.role not in ("ta", "admin"):
+            return jsonify(error="ta_user_id must be an existing user with the 'ta' or 'admin' role"), 400
         section.ta_user_id = ta.id
 
     db.session.commit()
@@ -277,8 +286,8 @@ def add_co_teacher(section_id):
         return jsonify(error="email is required"), 400
 
     ta = find_user_by_email(email)
-    if ta is None or ta.role != "ta":
-        return jsonify(error="no TA account found with that email — they need to sign in once first"), 404
+    if ta is None or ta.role not in ("ta", "admin"):
+        return jsonify(error="no TA or admin account found with that email — they need to sign in once first"), 404
     if ta.id == section.ta_user_id:
         return jsonify(error="that TA already owns this section"), 400
 
@@ -563,6 +572,7 @@ PROBLEM_TYPES = (
     "plain_text",
     "image",
     "iframe",
+    "prediction",
 )
 
 
@@ -602,6 +612,38 @@ def _validate_reference_solution(grading_mode, setup_code, test_code, reference_
             400,
         )
     return None
+
+
+def _validate_prediction_suite(content_json):
+    """Runs a 'prediction' question's >>> examples through the real sandbox
+    (as a doctest) so a typo'd expected output is caught at authoring time,
+    not by a student. Returns None on success or (response, status).
+    """
+    try:
+        content = json.loads(content_json) if content_json else {}
+    except ValueError:
+        content = {}
+    setup = content.get("setup") or ""
+    doctest_text = content.get("doctest") or ""
+
+    # Wrap the block in a function docstring — the doctest harness runs the
+    # >>> examples found in the submitted source's docstrings.
+    indented = "\n".join("    " + line for line in doctest_text.splitlines())
+    src = f'def _prediction_suite():\n    """\n{indented}\n    """\n'
+
+    error = _validate_reference_solution("doctest", setup, "", src)
+    if error is None:
+        return None
+    body, status = error
+    payload = body.get_json() or {}
+    message = payload.get("error", "a prediction example didn't produce its stated output")
+    return (
+        jsonify(
+            error=f"Prediction suite check failed: {message}",
+            failing_cases=payload.get("failing_cases"),
+        ),
+        status,
+    )
 
 
 def _question_fields_from_request(data):
@@ -733,6 +775,10 @@ def create_question(worksheet_id):
         )
         if error:
             return error
+    if fields["problem_type"] == "prediction":
+        error = _validate_prediction_suite(fields["content_json"])
+        if error:
+            return error
 
     next_order_index = (
         db.session.query(func.max(Question.order_index)).filter_by(worksheet_id=worksheet.id).scalar()
@@ -784,6 +830,10 @@ def update_question(question_id):
         error = _validate_reference_solution(
             fields["grading_mode"], fields["setup_code"], test_code, fields["reference_solution"]
         )
+        if error:
+            return error
+    if fields["problem_type"] == "prediction":
+        error = _validate_prediction_suite(fields["content_json"])
         if error:
             return error
 
