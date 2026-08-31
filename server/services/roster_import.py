@@ -12,9 +12,11 @@ key once real Google/Canvas OAuth replaces the login stub (see
 server/blueprints/auth.py:login, which already prefers an email match over
 creating a new user when a login provides one).
 
-Both are pasted or uploaded as tab-separated text from the Admin page, and
-both are idempotent — re-importing an updated sheet reuses what already
-matches rather than duplicating it.
+Both are uploaded as a CSV file from the Admin page (comma-separated, e.g.
+Google Sheets' File → Download → Comma Separated Values export) — the
+delimiter is auto-detected (see _detect_delimiter) so a legacy
+tab-separated paste still works too. Both are idempotent — re-importing an
+updated sheet reuses what already matches rather than duplicating it.
 
 Neither turns "which groups" data into actual Group rows: the staff sheet's
 "Groups" columns (e.g. "188-193") number groups on a scheme spanning the
@@ -38,6 +40,21 @@ from server.models.user import User
 DEFAULT_COURSE_NAME = "CS 61A"
 
 
+def _detect_delimiter(text):
+    """Both imports used to only ever see text pasted straight out of
+    Google Sheets (tab-separated). Now that the Admin page uploads an
+    actual .csv file instead, the real-world delimiter is comma — but
+    detect rather than hard-code it so a tab-separated paste still works
+    too (anyone scripting against this endpoint directly, e.g.), rather
+    than silently mis-parsing into one giant first column.
+    """
+    sample = text.splitlines()[0] if text.splitlines() else text
+    try:
+        return csv.Sniffer().sniff(sample, delimiters="\t,").delimiter
+    except csv.Error:
+        return ","
+
+
 def _find_or_create_class(course_name):
     klass = Class.query.filter_by(course_name=course_name).first()
     if klass is None:
@@ -53,7 +70,7 @@ def parse_ta_roster(text):
     cells (the "Groups" cell of each pair is read but discarded, and the
     header row is skipped by assuming row 0 is always the header).
     """
-    rows = list(csv.reader(io.StringIO(text), delimiter="\t"))
+    rows = list(csv.reader(io.StringIO(text), delimiter=_detect_delimiter(text)))
     if not rows:
         return []
 
@@ -134,7 +151,7 @@ def parse_enrollment_roster(text, discussion_type="Discussion"):
     raising — a roster export is exactly the kind of input worth tolerating
     a few incomplete rows in, rather than failing the whole import.
     """
-    reader = csv.DictReader(io.StringIO(text), delimiter="\t")
+    reader = csv.DictReader(io.StringIO(text), delimiter=_detect_delimiter(text))
     rows = []
     for row in reader:
         if (row.get("Type") or "").strip().lower() != discussion_type.lower():

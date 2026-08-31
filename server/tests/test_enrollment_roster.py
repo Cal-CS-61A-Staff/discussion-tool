@@ -22,6 +22,19 @@ SAMPLE_ENROLLMENT = (
 )
 
 
+def test_parse_enrollment_roster_also_accepts_a_real_comma_separated_csv():
+    """The Admin page now uploads an actual .csv file (comma-separated)
+    instead of a Google Sheets tab-separated paste — the delimiter is
+    auto-detected, so both work."""
+    csv_text = (
+        "Student Email,Staff Email,Location,Day,Start,Type\n"
+        "alice@berkeley.edu,lavanya@berkeley.edu,VLSB2038,R,2:00 PM,Discussion\n"
+    )
+    rows = parse_enrollment_roster(csv_text)
+    assert len(rows) == 1
+    assert rows[0]["student_email"] == "alice@berkeley.edu"
+
+
 def test_parse_enrollment_roster_keeps_only_discussion_rows():
     rows = parse_enrollment_roster(SAMPLE_ENROLLMENT)
     assert len(rows) == 3

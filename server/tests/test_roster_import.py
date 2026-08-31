@@ -39,6 +39,19 @@ def test_parse_ta_roster_reads_names_and_section_labels():
     assert "" not in by_name
 
 
+def test_parse_ta_roster_also_accepts_a_real_comma_separated_csv():
+    """The Admin page now uploads an actual .csv file (comma-separated)
+    instead of a Google Sheets tab-separated paste — the delimiter is
+    auto-detected, so both work."""
+    csv_text = (
+        "TA,Section 1,Groups\n"
+        "Alex Yang,R 2:00 PM-3:29 PM (VLSB2070),188-193\n"
+    )
+    entries = parse_ta_roster(csv_text)
+    by_name = {e["name"]: e["sections"] for e in entries}
+    assert by_name["Alex Yang"] == ["R 2:00 PM-3:29 PM (VLSB2070)"]
+
+
 def test_import_ta_roster_creates_tas_and_assigns_sections(app, db):
     summary = import_ta_roster(SAMPLE_ROSTER)
 
