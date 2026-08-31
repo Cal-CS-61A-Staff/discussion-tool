@@ -1,7 +1,8 @@
 """Covers TA-scoped-to-one-section access control, the admin role (grantable
-only out of band — see server/app.py:create-admin), and the group discussion
-history endpoint. Companion to test_publishing.py, which already covers the
-plain student/ta draft-visibility split this builds on top of.
+out of band via server/app.py:create-admin, or by an existing admin through
+POST /api/admins), and the group discussion history endpoint. Companion to
+test_publishing.py, which already covers the plain student/ta
+draft-visibility split this builds on top of.
 """
 
 from server.extensions import db
@@ -138,6 +139,37 @@ def test_group_history_visible_to_member_and_owning_ta_only(app, client):
     login_as(client, ta_b)
     resp = client.get(f"/api/groups/{group.id}/history")
     assert resp.status_code == 403
+
+
+def test_admin_can_grant_admin_role(app, client):
+    _section_a, _section_b, ta_a, _ta_b, admin = _make_two_sections_with_tas()
+    ta_a.email = "ta_a@berkeley.edu"
+    db.session.commit()
+
+    # A plain TA can't reach the endpoint at all.
+    login_as(client, ta_a)
+    resp = client.post("/api/admins", json={"email": "ta_a@berkeley.edu"})
+    assert resp.status_code == 403
+
+    # An admin can promote an existing TA — role flips, and (superset) the
+    # section they owned is still theirs.
+    login_as(client, admin)
+    resp = client.post("/api/admins", json={"email": "TA_A@berkeley.edu"})
+    assert resp.status_code == 201
+    assert resp.get_json()["admin"]["role"] == "admin"
+    assert ta_a.role == "admin"
+
+    # A brand-new email creates the account with the admin role.
+    resp = client.post("/api/admins", json={"email": "fresh@berkeley.edu", "name": "Fresh"})
+    assert resp.status_code == 201
+    created = User.query.filter_by(email="fresh@berkeley.edu").first()
+    assert created is not None
+    assert created.role == "admin"
+    assert created.display_name == "Fresh"
+
+    # Missing / malformed email is rejected.
+    resp = client.post("/api/admins", json={"email": "not-an-email"})
+    assert resp.status_code == 400
 
 
 def test_admin_login_requires_admin_role(app, client):

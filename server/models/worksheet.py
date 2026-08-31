@@ -79,3 +79,16 @@ class Question(db.Model):
     # test_cases_json at authoring time and never shown to students.
     test_cases_json = db.Column(db.Text, nullable=True)
     reference_solution = db.Column(db.Text, nullable=True)
+
+    # Optional, works on ANY problem_type. JSON-in-Text:
+    #   {"mode": "output", "setup": str, "doctest": str,
+    #    "items": [{"code", "expected"}]}   -- items parsed + sandbox-verified
+    #                                          on save; one drawn at random per
+    #                                          group; student predicts its output
+    #   {"mode": "written", "prompt": str}  -- a free-text reflection prompt
+    # When set it gates advancing (server/services/advance.py); NULL = no
+    # prediction. Replaces the old expected_output-driven coding quiz.
+    prediction_json = db.Column(db.Text, nullable=True)
+    # Optional, any problem_type: Python source rendered as an embedded
+    # pythontutor.com environment-diagram stepper below the prompt.
+    python_tutor_code = db.Column(db.Text, nullable=True)

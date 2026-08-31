@@ -5,6 +5,8 @@ import ConfidenceScale from '../components/student/ConfidenceScale.jsx';
 import GroupMembersStrip from '../components/student/GroupMembersStrip.jsx';
 import MarkdownContent from '../components/student/MarkdownContent.jsx';
 import NextQuestionButton from '../components/student/NextQuestionButton.jsx';
+import PredictionPanel from '../components/student/PredictionPanel.jsx';
+import PythonTutorPanel from '../components/student/PythonTutorPanel.jsx';
 import PracticeQuestion from '../components/student/PracticeQuestion.jsx';
 import ProblemWidget from '../components/student/ProblemWidget.jsx';
 import ProgressStrip from '../components/student/ProgressStrip.jsx';
@@ -24,6 +26,7 @@ export default function StudentWorksheetPage() {
   const [advancing, setAdvancing] = useState(false);
   const [givingUp, setGivingUp] = useState(false);
   const [responseSubmitting, setResponseSubmitting] = useState(false);
+  const [predictionSubmitting, setPredictionSubmitting] = useState(false);
   // 'idle' | 'saving' | 'saved' | 'error' — feedback for the debounced
   // shared-code autosave (handleCodeChange below), since it's collaborative
   // and a typist should know their keystrokes actually reached the server.
@@ -215,6 +218,19 @@ export default function StudentWorksheetPage() {
     }
   };
 
+  const handleSubmitPrediction = async (text) => {
+    clearError();
+    setPredictionSubmitting(true);
+    try {
+      await groupsApi.submitPrediction(groupId, worksheetId, data.question.id, text);
+      await refetch();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setPredictionSubmitting(false);
+    }
+  };
+
   const handleGiveUp = async () => {
     clearError();
     setGivingUp(true);
@@ -392,7 +408,6 @@ export default function StudentWorksheetPage() {
                     worksheetId={worksheetId}
                     source="shared"
                     code={localCode}
-                    predictCall={data.question.predict_call}
                     disabled={!isMeTypist}
                     label="Run tests"
                     graderCooldown={data.grader_cooldown}
@@ -400,8 +415,19 @@ export default function StudentWorksheetPage() {
                   />
                 </>
               )}
+
+              <PythonTutorPanel code={data.question.python_tutor_code} />
             </div>
           </div>
+
+          {data.question.prediction && (
+            <PredictionPanel
+              key={data.question.id}
+              prediction={data.question.prediction}
+              onSubmit={handleSubmitPrediction}
+              submitting={predictionSubmitting}
+            />
+          )}
 
           {isCoding && !isDiscussion && (
             <ScratchEditor
@@ -409,7 +435,6 @@ export default function StudentWorksheetPage() {
               groupId={groupId}
               worksheetId={worksheetId}
               initialCode={data.my_scratch_code}
-              predictCall={data.question.predict_call}
               starterCode={data.question.starter_code}
               graderCooldown={data.grader_cooldown}
               isIndividual={data.group.is_individual}
@@ -428,6 +453,7 @@ export default function StudentWorksheetPage() {
                 ready={data.ready_to_advance}
                 allRated={data.all_rated}
                 hasPassingRun={data.has_passing_run}
+                predictionReady={data.prediction_ready}
                 ratedCount={ratedCount}
                 memberCount={data.members.length}
                 onAdvance={handleAdvance}

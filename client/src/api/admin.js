@@ -19,6 +19,7 @@ export const getGrades = (worksheetId) => api.get(`/worksheets/${worksheetId}/gr
 
 export const listTas = () => api.get('/tas');
 export const addTa = (email, name) => api.post('/tas', { email, ...(name ? { name } : {}) });
+export const addAdmin = (email, name) => api.post('/admins', { email, ...(name ? { name } : {}) });
 export const assignSectionTa = (sectionId, taUserId) => api.put(`/sections/${sectionId}/ta`, { ta_user_id: taUserId });
 export const importRoster = (csv) => api.post('/roster/import', { csv });
 export const importStudentRoster = (csv, classId) =>

@@ -1,13 +1,25 @@
-export default function NextQuestionButton({ ready, allRated, hasPassingRun, ratedCount, memberCount, onAdvance, onForceAdvance, advancing }) {
+export default function NextQuestionButton({
+  ready,
+  allRated,
+  hasPassingRun,
+  predictionReady = true,
+  ratedCount,
+  memberCount,
+  onAdvance,
+  onForceAdvance,
+  advancing,
+}) {
   let note;
   if (ready) {
-    note = 'Everyone has rated and the group has a passing run — ready to advance.';
-  } else if (!allRated && !hasPassingRun) {
-    note = `Waiting on ${memberCount - ratedCount} of ${memberCount} group members to rate, and a passing "Run tests" with a correct prediction…`;
+    note = 'Everyone has rated and the group has finished this question — ready to advance.';
   } else if (!allRated) {
     note = `Waiting on ${memberCount - ratedCount} of ${memberCount} group members to rate…`;
+  } else if (!hasPassingRun) {
+    note = 'Waiting on the group to finish this question…';
+  } else if (!predictionReady) {
+    note = 'Make your group’s prediction to continue…';
   } else {
-    note = 'Waiting on a passing "Run tests" (all test cases + correct prediction) before you can advance…';
+    note = 'Almost there…';
   }
 
   const handleForceAdvance = () => {

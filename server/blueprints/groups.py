@@ -7,6 +7,7 @@ from server.auth import get_current_user, login_required, require_section_access
 from server.extensions import db
 from server.models.attempt import Attempt
 from server.models.group import Group, GroupAssignmentProgress, GroupMembership, GroupQuestionState, ScratchCode
+from server.models.group_prediction import GroupPrediction
 from server.models.question_response import QuestionResponse
 from server.models.rating import Rating
 from server.models.test_run import TestRun
@@ -14,12 +15,12 @@ from server.models.worksheet import Question, Worksheet
 from server.services import advance as advance_service
 from server.services import compare as compare_service
 from server.services import cooldown as cooldown_service
+from server.services import counterexample_grading
 from server.services import grader_cooldown as grader_cooldown_service
 from server.services import grading_queue as grading_queue_service
 from server.services import response_grading
 from server.services import serializers
 from server.services import typist as typist_service
-from server.services.predict_examples import extract_predict_examples_for_question
 from server.utils import utcnow
 
 groups_bp = Blueprint("groups", __name__)
@@ -83,17 +84,22 @@ def _get_or_create_progress(group, worksheet_id):
     return progress
 
 
+def _prediction_of(question):
+    try:
+        return json.loads(question.prediction_json) if question.prediction_json else None
+    except (ValueError, TypeError):
+        return None
+
+
 def _get_or_create_state(group, question):
     state = GroupQuestionState.query.filter_by(group_id=group.id, question_id=question.id).first()
     if state is None:
-        if (question.problem_type or "coding") == "prediction":
-            # Draw one item from the instructor's suite, fixed for this
-            # group from here on — predict_example_json holds the index.
-            items = response_grading.parse_content(question).get("items") or []
-            predict_example = {"prediction_item": random.randrange(len(items))} if items else None
-        else:
-            examples = extract_predict_examples_for_question(question)
-            predict_example = random.choice(examples) if examples else None
+        predict_example = None
+        pred = _prediction_of(question)
+        if pred and pred.get("mode") == "output" and pred.get("items"):
+            # Draw one item from the suite, fixed for this group from here
+            # on — predict_example_json holds the chosen index.
+            predict_example = {"prediction_item": random.randrange(len(pred["items"]))}
         state = GroupQuestionState(
             group_id=group.id,
             question_id=question.id,
@@ -517,12 +523,11 @@ def submit_rating(group_id):
 @login_required
 def submit_response(group_id, worksheet_id, question_id):
     """The group's shared answer to a non-code question (multiple choice,
-    dropdown, fill-in-the-blank, short answer, plain text, prediction). One
-    row per (group, question) — any member submits or edits it, last write
-    wins, mirroring the shared code editor. For auto-checkable types a
+    dropdown, fill-in-the-blank, short answer, plain text, counterexample).
+    One row per (group, question) — any member submits or edits it, last
+    write wins, mirroring the shared code editor. For auto-checkable types a
     correct answer here is what gates advancing (server/services/advance.py).
-    For a prediction question, correctness is measured against the
-    sandbox-verified output of the item this group was randomly assigned.
+    A 'counterexample' answer is graded synchronously in the sandbox.
     """
     group = _load_group(group_id)
     if group is None:
@@ -549,17 +554,13 @@ def submit_response(group_id, worksheet_id, question_id):
 
     data = request.get_json(silent=True) or {}
     response = data.get("response")
-    # For a prediction question, correctness is against the sandbox-verified
-    # output of the specific item this group drew — ensure the draw exists
-    # (normally already made when the group first polled /state).
-    if (question.problem_type or "coding") == "prediction":
-        _get_or_create_state(group, question)
-    prediction_item = serializers.group_prediction_item(question, group.id)
-    is_correct = response_grading.check_response(
-        question,
-        response,
-        prediction_expected=prediction_item["expected"] if prediction_item else None,
-    )
+
+    if (question.problem_type or "coding") == "counterexample":
+        is_correct, ce_error = counterexample_grading.grade(question, response)
+        if ce_error:
+            return jsonify(error=ce_error), 400
+    else:
+        is_correct = response_grading.check_response(question, response)
 
     row = QuestionResponse.query.filter_by(group_id=group.id, question_id=question.id).first()
     if row is None:
@@ -567,6 +568,62 @@ def submit_response(group_id, worksheet_id, question_id):
         db.session.add(row)
     row.user_id = user.id
     row.response_json = json.dumps(response)
+    row.is_correct = is_correct
+    row.created_at = utcnow()
+    db.session.commit()
+
+    return jsonify(ok=True, is_correct=is_correct)
+
+
+@groups_bp.post("/<int:group_id>/worksheets/<int:worksheet_id>/questions/<int:question_id>/prediction")
+@login_required
+def submit_prediction(group_id, worksheet_id, question_id):
+    """The group's shared answer to the optional prediction prompt on a
+    question (Question.prediction_json). One row per (group, question).
+    'output' mode is checked against the drawn item's sandbox-verified
+    expected output (a pure string compare — the item was verified at save
+    time); 'written' mode is just stored. A satisfied prediction gates
+    advancing (server/services/advance.py).
+    """
+    group = _load_group(group_id)
+    if group is None:
+        return jsonify(error="group not found"), 404
+
+    user = get_current_user()
+    if _membership(group_id, user.id) is None:
+        return jsonify(error="not a member of this group"), 403
+
+    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    if error:
+        return error
+
+    question = Question.query.filter_by(id=question_id, worksheet_id=worksheet_id).first()
+    if question is None:
+        return jsonify(error="question not found"), 404
+    pred = _prediction_of(question)
+    if not pred:
+        return jsonify(error="this question has no prediction prompt"), 400
+
+    progress = GroupAssignmentProgress.query.filter_by(group_id=group_id, worksheet_id=worksheet_id).first()
+    unlocked_index = progress.current_question_index if progress is not None else 0
+    if question.order_index > unlocked_index:
+        return jsonify(error="this question hasn't been unlocked yet"), 403
+
+    text = (request.get_json(silent=True) or {}).get("text") or ""
+
+    is_correct = None
+    if pred.get("mode") == "output":
+        _get_or_create_state(group, question)  # ensure the item is drawn
+        item = serializers.group_prediction_item(question, group.id)
+        if item is not None:
+            is_correct = response_grading.check_prediction(item["expected"], text)
+
+    row = GroupPrediction.query.filter_by(group_id=group.id, question_id=question.id).first()
+    if row is None:
+        row = GroupPrediction(group_id=group.id, question_id=question.id)
+        db.session.add(row)
+    row.user_id = user.id
+    row.prediction_text = text
     row.is_correct = is_correct
     row.created_at = utcnow()
     db.session.commit()
@@ -713,9 +770,9 @@ def run_tests(group_id):
     if not code or not code.strip():
         return jsonify(error="code is required"), 400
 
+    # The inline "predict before you run" quiz is retired — the optional
+    # prediction prompt has its own submit endpoint now.
     prediction = (data.get("prediction") or "").strip()
-    if not prediction:
-        return jsonify(error="a prediction is required before running tests"), 400
 
     if not grader_cooldown_service.try_acquire(user):
         return (

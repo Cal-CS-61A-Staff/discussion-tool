@@ -35,3 +35,5 @@ export const practiceRun = (groupId, worksheetId, questionId, code, prediction) 
   api.post(`/groups/${groupId}/worksheets/${worksheetId}/questions/${questionId}/practice-run`, { code, prediction });
 export const submitResponse = (groupId, worksheetId, questionId, response) =>
   api.post(`/groups/${groupId}/worksheets/${worksheetId}/questions/${questionId}/response`, { response });
+export const submitPrediction = (groupId, worksheetId, questionId, text) =>
+  api.post(`/groups/${groupId}/worksheets/${worksheetId}/questions/${questionId}/prediction`, { text });

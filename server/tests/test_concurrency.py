@@ -448,12 +448,9 @@ def test_practice_run_route_allows_an_already_unlocked_earlier_question(app, cli
     assert resp.get_json()["status"] == "pending"
 
 
-def test_practice_run_includes_the_same_prediction_quiz_as_the_live_flow(app, client, monkeypatch):
-    """Browsing back to an earlier question still gets the full
-    experience — code, prediction, and results — not just a bare re-run
-    (server/services/serializers.py:build_group_work's predict_call,
-    client/src/components/student/PracticeQuestion.jsx).
-    """
+def test_practice_run_enqueues_a_grading_job(app, client, monkeypatch):
+    """Browsing back to an earlier question can re-run its tests for
+    practice without touching the group's real progress."""
     from server.tests.conftest import login_as
 
     group, progress, question_0, users = _make_group_with_members(1)
@@ -465,29 +462,15 @@ def test_practice_run_includes_the_same_prediction_quiz_as_the_live_flow(app, cl
             predict_call=predict_call, student_prediction=student_prediction
         ),
     )
-    # Two calls in this one test would otherwise hit the real per-user
-    # grader cooldown -- not what's under test here.
     monkeypatch.setattr("server.blueprints.groups.grader_cooldown_service.try_acquire", lambda user: True)
     login_as(client, users[0])
 
-    # No prediction given at all -- a plain re-run, same as before this
-    # existed, shouldn't try to resolve or send a predict_call.
     resp = client.post(
         f"/api/groups/{group.id}/worksheets/{progress.worksheet_id}/questions/{question_0.id}/practice-run",
         json={"code": "def f(): return 1"},
     )
     assert resp.status_code == 202
     assert enqueued["predict_call"] is None
-    assert enqueued["student_prediction"] is None
-
-    # A prediction given -- resolves the same call the live view would show.
-    resp = client.post(
-        f"/api/groups/{group.id}/worksheets/{progress.worksheet_id}/questions/{question_0.id}/practice-run",
-        json={"code": "def f(): return 1", "prediction": "my guess"},
-    )
-    assert resp.status_code == 202
-    assert enqueued["predict_call"] == "this code"
-    assert enqueued["student_prediction"] == "my guess"
 
 
 def test_practice_run_route_rejects_a_not_yet_unlocked_question(app, client):
@@ -524,18 +507,14 @@ def test_build_group_work_excludes_locked_questions(app):
     assert question_1.id not in ids
 
 
-def test_build_group_work_includes_the_predict_call_for_practice(app):
-    """The "view previous question"/"View work" replay needs the same
-    predict_call the live view showed, so PracticeQuestion.jsx can render
-    the full prediction quiz there too, not just a bare code+run block."""
+def test_build_group_work_lists_unlocked_questions(app):
+    """The "view previous question" / "View work" replay includes each
+    unlocked question with its prompt and rating."""
     group, progress, question_0, users = _make_group_with_members(1)
 
     work = serializers.build_group_work(group, progress.worksheet_id, users[0])
-    # question_0's fixture prompt has no `>>>` example, so
-    # extract_predict_examples falls back to this literal placeholder --
-    # what matters is that *some* call was resolved without a stored
-    # GroupQuestionState (this question was never actually made current).
-    assert work["questions"][0]["predict_call"] == "this code"
+    assert work["questions"][0]["question_id"] == question_0.id
+    assert "prompt" in work["questions"][0]
 
 
 def test_update_scratch_code_route_persists_per_user(app, client):
@@ -852,12 +831,10 @@ def test_group_routes_reject_a_worksheet_from_a_different_class(app, client):
     assert resp.status_code == 200
 
 
-def test_run_tests_enqueues_the_predict_call_not_a_precomputed_expected(app, client, monkeypatch):
-    """The prediction quiz is graded against what the student's own code
-    actually does (server/services/compare.py:build_prediction_feedback),
-    which is only known once the sandbox runs it — so run_tests must
-    enqueue the *call* string, never a pre-baked "expected" value.
-    """
+def test_run_tests_enqueues_a_grading_job(app, client, monkeypatch):
+    """run_tests hands the submission to the grading queue. The old inline
+    prediction quiz is retired — predict_call is always None now (the
+    optional prediction prompt has its own submit endpoint)."""
     from server.tests.conftest import login_as
 
     group, progress, question, users = _make_group_with_members(1)
@@ -873,18 +850,8 @@ def test_run_tests_enqueues_the_predict_call_not_a_precomputed_expected(app, cli
 
     resp = client.post(
         f"/api/groups/{group.id}/run-tests",
-        json={
-            "worksheet_id": progress.worksheet_id,
-            "source": "scratch",
-            "code": "def f(): return 1",
-            "prediction": "my guess",
-        },
+        json={"worksheet_id": progress.worksheet_id, "source": "scratch", "code": "def f(): return 1"},
     )
 
     assert resp.status_code == 202
-    # The fixture question's prompt has no `>>>` example, so
-    # extract_predict_examples falls back to this literal placeholder --
-    # what matters here is it's the *call*, not "42" (the question's
-    # expected_output, which the old solution-based system would have sent).
-    assert enqueued["predict_call"] == "this code"
-    assert enqueued["student_prediction"] == "my guess"
+    assert enqueued["predict_call"] is None

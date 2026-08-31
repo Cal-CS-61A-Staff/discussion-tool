@@ -25,7 +25,13 @@ from server.models.worksheet import Question, Worksheet
 from server.services import advance as advance_service
 from server.services import grading as grading_service
 from server.services import response_grading
-from server.services.roster_import import add_ta_by_email, find_user_by_email, import_student_roster, import_ta_roster
+from server.services.roster_import import (
+    add_admin_by_email,
+    add_ta_by_email,
+    find_user_by_email,
+    import_student_roster,
+    import_ta_roster,
+)
 from server.services.test_case_grading import generate_simple_test_code
 
 admin_bp = Blueprint("admin", __name__)
@@ -64,6 +70,29 @@ def add_ta():
         return jsonify(error="a valid email is required"), 400
     ta = add_ta_by_email(email, name or None)
     return jsonify(ta={"id": ta.id, "display_name": ta.display_name, "email": ta.email, "role": ta.role}), 201
+
+
+@admin_bp.post("/admins")
+@admin_required
+def add_admin():
+    """Admin-only — grant the 'admin' role to a user, found or created by
+    email (+ optional name). 'role' is one column and 'admin' is a strict
+    superset of 'ta'/'student' (server/auth.py), so this is additive: a
+    promoted TA keeps all their sections and simply gains the admin-only
+    actions. Like add_ta above, a not-yet-registered person can be granted
+    admin from just their email. This is the in-app path alongside the
+    `create-admin` CLI (server/app.py).
+    """
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    name = (data.get("name") or "").strip()
+    if not email or "@" not in email:
+        return jsonify(error="a valid email is required"), 400
+    admin = add_admin_by_email(email, name or None)
+    return (
+        jsonify(admin={"id": admin.id, "display_name": admin.display_name, "email": admin.email, "role": admin.role}),
+        201,
+    )
 
 
 @admin_bp.put("/sections/<int:section_id>/ta")
@@ -588,7 +617,7 @@ PROBLEM_TYPES = (
     "plain_text",
     "image",
     "iframe",
-    "prediction",
+    "counterexample",
 )
 
 
@@ -630,13 +659,14 @@ def _validate_reference_solution(grading_mode, setup_code, test_code, reference_
     return None
 
 
-def _validate_prediction_suite(content_json):
-    """Runs a 'prediction' question's >>> examples through the real sandbox
-    (as a doctest) so a typo'd expected output is caught at authoring time,
-    not by a student. Returns None on success or (response, status).
+def _validate_prediction_suite(prediction_json):
+    """Runs an output-mode prediction's >>> examples through the real
+    sandbox (as a doctest) so a typo'd expected output is caught at
+    authoring time, not by a student. Returns None on success or
+    (response, status).
     """
     try:
-        content = json.loads(content_json) if content_json else {}
+        content = json.loads(prediction_json) if prediction_json else {}
     except ValueError:
         content = {}
     setup = content.get("setup") or ""
@@ -683,6 +713,14 @@ def _question_fields_from_request(data):
     if problem_type not in PROBLEM_TYPES:
         return None, (jsonify(error=f"problem_type must be one of: {', '.join(PROBLEM_TYPES)}"), 400)
 
+    # Optional, on any problem_type.
+    clean_prediction, prediction_error = response_grading.validate_prediction(data.get("prediction"))
+    if prediction_error:
+        return None, (jsonify(error=prediction_error), 400)
+    prediction_json = json.dumps(clean_prediction) if clean_prediction else None
+    python_tutor_code = (data.get("python_tutor_code") or "").strip() or None
+    extras = {"prediction_json": prediction_json, "python_tutor_code": python_tutor_code}
+
     if problem_type != "coding":
         clean_content, content_error = response_grading.validate_content(problem_type, data.get("content") or {})
         if content_error:
@@ -701,6 +739,7 @@ def _question_fields_from_request(data):
             "test_cases": None,
             "test_code": "",
             "solution_markdown": solution_markdown,
+            **extras,
         }, None
 
     if grading_mode not in GRADING_MODES:
@@ -719,6 +758,7 @@ def _question_fields_from_request(data):
             "test_cases": None,
             "test_code": "",
             "solution_markdown": solution_markdown,
+            **extras,
         }, None
 
     starter_code = data.get("starter_code") or ""
@@ -754,6 +794,7 @@ def _question_fields_from_request(data):
         "test_cases": test_cases if grading_mode == "simple" else None,
         "test_code": test_code if grading_mode == "pltest" else "",
         "solution_markdown": solution_markdown,
+        **extras,
     }, None
 
 
@@ -791,8 +832,8 @@ def create_question(worksheet_id):
         )
         if error:
             return error
-    if fields["problem_type"] == "prediction":
-        error = _validate_prediction_suite(fields["content_json"])
+    if fields["prediction_json"] and json.loads(fields["prediction_json"]).get("mode") == "output":
+        error = _validate_prediction_suite(fields["prediction_json"])
         if error:
             return error
 
@@ -813,6 +854,8 @@ def create_question(worksheet_id):
         grading_mode=fields["grading_mode"],
         problem_type=fields["problem_type"],
         content_json=fields["content_json"],
+        prediction_json=fields["prediction_json"],
+        python_tutor_code=fields["python_tutor_code"],
         test_cases_json=json.dumps(fields["test_cases"]) if fields["test_cases"] is not None else None,
         reference_solution=fields["reference_solution"],
     )
@@ -848,8 +891,8 @@ def update_question(question_id):
         )
         if error:
             return error
-    if fields["problem_type"] == "prediction":
-        error = _validate_prediction_suite(fields["content_json"])
+    if fields["prediction_json"] and json.loads(fields["prediction_json"]).get("mode") == "output":
+        error = _validate_prediction_suite(fields["prediction_json"])
         if error:
             return error
 
@@ -862,6 +905,8 @@ def update_question(question_id):
     question.grading_mode = fields["grading_mode"]
     question.problem_type = fields["problem_type"]
     question.content_json = fields["content_json"]
+    question.prediction_json = fields["prediction_json"]
+    question.python_tutor_code = fields["python_tutor_code"]
     question.test_cases_json = json.dumps(fields["test_cases"]) if fields["test_cases"] is not None else None
     question.reference_solution = fields["reference_solution"]
     db.session.commit()
@@ -1052,6 +1097,8 @@ def _serialize_question_detail(question):
         # with them, unlike the student /state payload).
         "problem_type": question.problem_type or "coding",
         "content": response_grading.parse_content(question) if (question.problem_type or "coding") != "coding" else None,
+        "prediction": json.loads(question.prediction_json) if question.prediction_json else None,
+        "python_tutor_code": question.python_tutor_code or "",
         "test_cases": test_cases,
         "test_code": question.test_code,
         "reference_solution": question.reference_solution,

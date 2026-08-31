@@ -169,6 +169,30 @@ def add_ta_by_email(email, name=None):
     return ta
 
 
+def add_admin_by_email(email, name=None):
+    """Find-or-create an account for a single email and grant it the
+    'admin' role (the Admin page's "add an admin" input). 'role' is a
+    single column and 'admin' is a strict superset of 'ta'/'student' in
+    this app (see server/auth.py:role_required), so promoting a TA here
+    keeps every section they owned or co-taught — they just gain the
+    admin-only actions on top. A brand-new account can be seeded from just
+    an email, before the person has ever signed in, exactly like
+    add_ta_by_email above."""
+    email = email.strip().lower()
+    user = find_user_by_email(email)
+    if user is None:
+        user = User(
+            display_name=(name or "").strip() or _placeholder_display_name(email), role="admin", email=email
+        )
+        db.session.add(user)
+    else:
+        user.role = "admin"
+        if name and name.strip():
+            user.display_name = name.strip()
+    db.session.commit()
+    return user
+
+
 # --------------------------------------------------------------------------
 # Student roster: Email, Name
 # --------------------------------------------------------------------------

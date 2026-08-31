@@ -17,7 +17,7 @@ const GRADED_TYPES = new Set([
   'fill_blank_code',
   'fill_blank_markdown',
   'short_answer',
-  'prediction',
+  'counterexample',
 ]);
 
 const BLANK_MARKER = /\[\[(\d+)\]\]/g;
@@ -58,6 +58,11 @@ export default function ProblemWidget({ problemType, content, response, response
     if (type === 'fill_blank_code' || type === 'fill_blank_markdown') {
       const base = Array.isArray(response) ? response : [];
       return Array.from({ length: nBlanks }, (_, i) => base[i] ?? '');
+    }
+    if (type === 'counterexample') {
+      const names = (content?.params || []).map((p) => p.name);
+      const base = response && typeof response === 'object' ? response : {};
+      return Object.fromEntries(names.map((n) => [n, base[n] ?? '']));
     }
     return typeof response === 'string' ? response : '';
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -190,36 +195,33 @@ export default function ProblemWidget({ problemType, content, response, response
         placeholder="Your answer"
       />
     );
-  } else if (type === 'prediction') {
-    // Live page: content.item is the drawn snippet. Editor preview: fall
-    // back to the first authored item so there's something to show.
-    const item =
-      content?.item ||
-      (Array.isArray(content?.items) && content.items[0] ? { index: 0, code: content.items[0].code } : null);
+  } else if (type === 'counterexample') {
+    const names = (content?.params || []).map((p) => p.name);
     field = (
       <div>
-        {content?.setup ? (
-          <pre className="code-editor-wrap" style={{ padding: 10, margin: '0 0 8px', color: '#eee' }}>
-            <code className="code">{content.setup}</code>
+        {content?.buggy_code ? (
+          <pre className="code-editor-wrap" style={{ padding: 10, margin: '0 0 10px', color: '#eee' }}>
+            <code className="code">{content.buggy_code}</code>
           </pre>
         ) : null}
-        {item ? (
-          <pre className="code-editor-wrap" style={{ padding: 10, margin: 0, color: '#eee' }}>
-            <code className="code">{item.code}</code>
-          </pre>
-        ) : (
-          <p style={{ color: 'var(--muted)', fontSize: 13 }}>Preparing your prediction…</p>
-        )}
-        <div className="form-group" style={{ marginTop: 10, marginBottom: 0 }}>
-          <label>What does this display?</label>
-          <textarea
-            className="form-control code"
-            rows={3}
-            value={draft}
-            disabled={readOnly || !item}
-            onChange={(e) => update(e.target.value)}
-            placeholder="Type the exact output"
-          />
+        {content?.constraints ? (
+          <p style={{ fontSize: 12, color: 'var(--muted)', margin: '0 0 8px' }}>
+            Inputs must satisfy <code className="code">{content.constraints}</code>.
+          </p>
+        ) : null}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {names.map((n) => (
+            <label key={n} style={{ fontSize: 13 }}>
+              {n}{' = '}
+              <input
+                className="form-control code"
+                style={{ display: 'inline-block', width: 90, padding: '2px 6px' }}
+                value={(draft && draft[n]) || ''}
+                disabled={readOnly}
+                onChange={(e) => update({ ...draft, [n]: e.target.value })}
+              />
+            </label>
+          ))}
         </div>
       </div>
     );
@@ -244,11 +246,24 @@ export default function ProblemWidget({ problemType, content, response, response
     return null;
   }
 
-  const meetsMin = type !== 'plain_text' || !content?.min_length || draft.trim().length >= content.min_length;
-  const hasAnswer =
-    type === 'multiple_choice' || type === 'dropdown' || type === 'fill_blank_code' || type === 'fill_blank_markdown'
-      ? Array.isArray(draft) && draft.some((v) => v !== '' && v != null)
-      : draft.trim().length > 0;
+  const meetsMin =
+    type !== 'plain_text' || !content?.min_length || String(draft).trim().length >= content.min_length;
+  let hasAnswer;
+  if (['multiple_choice', 'dropdown', 'fill_blank_code', 'fill_blank_markdown'].includes(type)) {
+    hasAnswer = Array.isArray(draft) && draft.some((v) => v !== '' && v != null);
+  } else if (type === 'counterexample') {
+    hasAnswer = draft && Object.values(draft).every((v) => String(v).trim().length > 0);
+  } else {
+    hasAnswer = String(draft).trim().length > 0;
+  }
+
+  const submitLabel = submitting
+    ? type === 'counterexample'
+      ? 'Checking…'
+      : 'Submitting…'
+    : graded
+      ? 'Submit answer'
+      : 'Save answer';
 
   return (
     <div className="problem-widget" style={{ marginTop: 10 }}>
@@ -261,13 +276,17 @@ export default function ProblemWidget({ problemType, content, response, response
             disabled={submitting || !dirty || !hasAnswer || !meetsMin}
             onClick={() => onSubmit(draft)}
           >
-            {submitting ? 'Submitting…' : graded ? 'Submit answer' : 'Save answer'}
+            {submitLabel}
           </button>
           {!dirty && response != null && graded && responseCorrect === true && (
-            <span className="badge badge-success">✓ correct</span>
+            <span className="badge badge-success">
+              {type === 'counterexample' ? '✓ that breaks it!' : '✓ correct'}
+            </span>
           )}
           {!dirty && response != null && graded && responseCorrect === false && (
-            <span className="badge badge-default">✗ not correct yet</span>
+            <span className="badge badge-default">
+              {type === 'counterexample' ? '✗ the code handles that — keep looking' : '✗ not correct yet'}
+            </span>
           )}
           {!dirty && response != null && !graded && <span className="badge badge-default">answer saved</span>}
         </div>

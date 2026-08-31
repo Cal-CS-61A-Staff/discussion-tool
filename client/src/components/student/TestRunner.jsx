@@ -1,20 +1,7 @@
-import { useState } from 'react';
-import GraderFeedbackPanel from './GraderFeedbackPanel.jsx';
 import TestResultsPanel from './TestResultsPanel.jsx';
 import { useTestRunner } from '../../hooks/useTestRunner.js';
 
-export default function TestRunner({
-  groupId,
-  worksheetId,
-  source,
-  code,
-  predictCall,
-  disabled,
-  label,
-  graderCooldown,
-  lastSharedRun,
-}) {
-  const [prediction, setPrediction] = useState('');
+export default function TestRunner({ groupId, worksheetId, source, code, disabled, label, graderCooldown, lastSharedRun }) {
   const { results, running, error, run, remainingSeconds, cooldownSeconds } = useTestRunner(
     groupId,
     worksheetId,
@@ -30,42 +17,17 @@ export default function TestRunner({
   const isSomeoneElsesRun = !results && Boolean(lastSharedRun);
 
   const onCooldown = remainingSeconds > 0;
-  const canRun = !disabled && !running && !onCooldown && Boolean(code && code.trim()) && Boolean(prediction.trim());
+  const canRun = !disabled && !running && !onCooldown && Boolean(code && code.trim());
   const ringCircumference = 2 * Math.PI * 6.5;
   const ringOffset =
     cooldownSeconds > 0 ? ringCircumference * (1 - remainingSeconds / cooldownSeconds) : ringCircumference;
-  const question = predictCall ? (
-    <>
-      What do you think <code className="code">{predictCall}</code> will output?
-    </>
-  ) : (
-    'What do you think this code will output?'
-  );
 
   return (
     <div className="predict-row" style={{ marginTop: 14 }}>
-      <div className="predict-field form-group" style={{ marginBottom: 0 }}>
-        <label htmlFor={`prediction-${source}`}>{question}</label>
-        <textarea
-          id={`prediction-${source}`}
-          className="form-control code"
-          rows={3}
-          value={prediction}
-          onChange={(e) => setPrediction(e.target.value)}
-          placeholder="Type your prediction before running"
-          disabled={disabled}
-        />
-      </div>
-      <button className="btn btn-primary run-btn" onClick={() => run(code, prediction.trim())} disabled={!canRun}>
+      <button className="btn btn-primary run-btn" onClick={() => run(code, '')} disabled={!canRun}>
         {onCooldown && (
           <svg className="cooldown-ring" viewBox="0 0 16 16">
-            <circle
-              cx="8"
-              cy="8"
-              r="6.5"
-              strokeDasharray={ringCircumference}
-              strokeDashoffset={ringOffset}
-            />
+            <circle cx="8" cy="8" r="6.5" strokeDasharray={ringCircumference} strokeDashoffset={ringOffset} />
           </svg>
         )}
         {onCooldown ? `Wait ${remainingSeconds}s` : running ? 'Running…' : label || 'Run tests'}
@@ -81,7 +43,6 @@ export default function TestRunner({
             Showing the most recent run, by {displayResults.by}.
           </p>
         )}
-        <GraderFeedbackPanel feedback={displayResults?.prediction_feedback} />
         <TestResultsPanel results={displayResults} />
       </div>
     </div>

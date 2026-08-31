@@ -1,24 +1,22 @@
 import { useState } from 'react';
 import CodeEditor from './CodeEditor.jsx';
 import ConfidenceScale from './ConfidenceScale.jsx';
-import GraderFeedbackPanel from './GraderFeedbackPanel.jsx';
 import MarkdownContent from './MarkdownContent.jsx';
+import PredictionPanel from './PredictionPanel.jsx';
 import ProblemWidget from './ProblemWidget.jsx';
+import PythonTutorPanel from './PythonTutorPanel.jsx';
 import TestResultsPanel from './TestResultsPanel.jsx';
 import * as groupsApi from '../../api/groups.js';
 import { usePracticeRunner } from '../../hooks/usePracticeRunner.js';
 
 /** One code buffer's practice view — editable for the viewer's own
- * practice, with the same prediction quiz + "Run tests" + results the live
- * question has, all re-graded without touching the group's real progress/
- * completed status (server/blueprints/groups.py: POST .../practice-run).
- * Shared between the group's submitted-code block and the personal
- * scratch-code block below, since both need the same shape, just against
- * different starting code and with their own independent run state.
+ * practice, with the same "Run tests" + results the live question has, all
+ * re-graded without touching the group's real progress/completed status
+ * (server/blueprints/groups.py: POST .../practice-run). Shared between the
+ * group's submitted-code block and the personal scratch-code block below.
  */
-function PracticeCodeBlock({ groupId, worksheetId, questionId, initialCode, predictCall, editorLabel, runLabel, gradingMode }) {
+function PracticeCodeBlock({ groupId, worksheetId, questionId, initialCode, editorLabel, runLabel, gradingMode }) {
   const [code, setCode] = useState(initialCode || '');
-  const [prediction, setPrediction] = useState('');
   const { results, running, error, run, remainingSeconds, cooldownSeconds } = usePracticeRunner(
     groupId,
     worksheetId,
@@ -26,36 +24,17 @@ function PracticeCodeBlock({ groupId, worksheetId, questionId, initialCode, pred
   );
 
   const onCooldown = remainingSeconds > 0;
-  const canRun = !running && !onCooldown && Boolean(code && code.trim()) && Boolean(prediction.trim());
+  const canRun = !running && !onCooldown && Boolean(code && code.trim());
   const ringCircumference = 2 * Math.PI * 6.5;
   const ringOffset =
     cooldownSeconds > 0 ? ringCircumference * (1 - remainingSeconds / cooldownSeconds) : ringCircumference;
-
-  const question = predictCall ? (
-    <>
-      What do you think <code className="code">{predictCall}</code> will output?
-    </>
-  ) : (
-    'What do you think this code will output?'
-  );
 
   return (
     <>
       <CodeEditor code={code} onChange={setCode} editorLabel={editorLabel} />
       {gradingMode !== 'discussion' && (
         <div className="predict-row" style={{ marginTop: 14 }}>
-          <div className="predict-field form-group" style={{ marginBottom: 0 }}>
-            <label htmlFor={`practice-prediction-${questionId}-${editorLabel}`}>{question}</label>
-            <textarea
-              id={`practice-prediction-${questionId}-${editorLabel}`}
-              className="form-control code"
-              rows={3}
-              value={prediction}
-              onChange={(e) => setPrediction(e.target.value)}
-              placeholder="Type your prediction before running"
-            />
-          </div>
-          <button type="button" className="btn btn-primary run-btn" onClick={() => run(code, prediction.trim())} disabled={!canRun}>
+          <button type="button" className="btn btn-primary run-btn" onClick={() => run(code, '')} disabled={!canRun}>
             {onCooldown && (
               <svg className="cooldown-ring" viewBox="0 0 16 16">
                 <circle cx="8" cy="8" r="6.5" strokeDasharray={ringCircumference} strokeDashoffset={ringOffset} />
@@ -69,7 +48,6 @@ function PracticeCodeBlock({ groupId, worksheetId, questionId, initialCode, pred
             </div>
           )}
           <div style={{ width: '100%' }}>
-            <GraderFeedbackPanel feedback={results?.prediction_feedback} />
             <TestResultsPanel results={results} />
           </div>
         </div>
@@ -101,8 +79,22 @@ export default function PracticeQuestion({ groupId, worksheetId, question, showP
   const [responseSubmitting, setResponseSubmitting] = useState(false);
   const [response, setResponse] = useState(question.group_response ?? null);
   const [responseCorrect, setResponseCorrect] = useState(question.group_response_correct ?? null);
+  const [prediction, setPrediction] = useState(question.prediction ?? null);
+  const [predictionSubmitting, setPredictionSubmitting] = useState(false);
 
   const isCoding = (question.problem_type || 'coding') === 'coding';
+
+  const handleSubmitPrediction = async (text) => {
+    setPredictionSubmitting(true);
+    try {
+      const res = await groupsApi.submitPrediction(groupId, worksheetId, question.question_id, text);
+      setPrediction((p) => ({ ...p, group_answer: text, group_correct: res.is_correct ?? null }));
+    } catch {
+      // Best-effort — reviewing a past question doesn't gate anything.
+    } finally {
+      setPredictionSubmitting(false);
+    }
+  };
 
   const handleSubmitResponse = async (value) => {
     setResponseSubmitting(true);
@@ -165,10 +157,17 @@ export default function PracticeQuestion({ groupId, worksheetId, question, showP
           worksheetId={worksheetId}
           questionId={question.question_id}
           initialCode={question.code ?? question.starter_code}
-          predictCall={question.predict_call}
           editorLabel="Your code — edit freely to practice"
           runLabel="Run tests"
           gradingMode={question.grading_mode}
+        />
+      )}
+      <PythonTutorPanel code={question.python_tutor_code} />
+      {prediction && (
+        <PredictionPanel
+          prediction={prediction}
+          onSubmit={handleSubmitPrediction}
+          submitting={predictionSubmitting}
         />
       )}
       {question.scratch_code != null && (
@@ -183,7 +182,6 @@ export default function PracticeQuestion({ groupId, worksheetId, question, showP
               worksheetId={worksheetId}
               questionId={question.question_id}
               initialCode={question.scratch_code}
-              predictCall={question.predict_call}
               editorLabel="scratch"
               runLabel="Run tests on my scratch code"
               gradingMode={question.grading_mode}

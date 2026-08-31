@@ -3,6 +3,8 @@ import { useNavigate, useParams } from 'react-router-dom';
 import CodeEditor from '../components/student/CodeEditor.jsx';
 import MarkdownContent from '../components/student/MarkdownContent.jsx';
 import ProblemWidget from '../components/student/ProblemWidget.jsx';
+import PythonTutorPanel from '../components/student/PythonTutorPanel.jsx';
+import PredictionEditor from '../components/ta/PredictionEditor.jsx';
 import ProblemTypeEditor, { PROBLEM_TYPE_DEFAULT_CONTENT } from '../components/ta/ProblemTypeEditor.jsx';
 import * as adminApi from '../api/admin.js';
 
@@ -19,12 +21,12 @@ const NEW_SLIDE_ID = 'new';
 const PROBLEM_TYPE_OPTIONS = [
   { key: 'coding_doctest', label: 'Coding — Doctest (docstring >>> examples)', problemType: 'coding', gradingMode: 'doctest' },
   { key: 'coding_pltest', label: 'Coding — Custom test code', problemType: 'coding', gradingMode: 'pltest' },
-  { key: 'prediction', label: 'Prediction (guess the output)', problemType: 'prediction', gradingMode: 'discussion' },
   { key: 'discussion', label: 'Discussion (no code)', problemType: 'coding', gradingMode: 'discussion' },
   { key: 'multiple_choice', label: 'Multiple Choice', problemType: 'multiple_choice', gradingMode: 'discussion' },
   { key: 'fill_blank_code', label: 'Fill in the Blank (Coding)', problemType: 'fill_blank_code', gradingMode: 'discussion' },
   { key: 'fill_blank_markdown', label: 'Fill in the Blank (Markdown)', problemType: 'fill_blank_markdown', gradingMode: 'discussion' },
   { key: 'short_answer', label: 'Short Answer', problemType: 'short_answer', gradingMode: 'discussion' },
+  { key: 'counterexample', label: 'Counterexample (find inputs that break the code)', problemType: 'counterexample', gradingMode: 'discussion' },
   { key: 'text_markdown', label: 'Text (Markdown)', problemType: 'text_markdown', gradingMode: 'discussion' },
   { key: 'dropdown', label: 'Dropdown', problemType: 'dropdown', gradingMode: 'discussion' },
   { key: 'plain_text', label: 'Plain Text Box', problemType: 'plain_text', gradingMode: 'discussion' },
@@ -60,7 +62,7 @@ const PROBLEM_TYPE_SHORT_LABELS = {
   coding_simple: 'Simple',
   coding_doctest: 'Doctest',
   coding_pltest: 'Custom test',
-  prediction: 'Prediction',
+  counterexample: 'Counterexample',
   discussion: 'No code',
   multiple_choice: 'Multiple choice',
   fill_blank_code: 'Fill blank (code)',
@@ -88,6 +90,8 @@ const blankForm = {
   title: '',
   problemType: 'coding',
   content: {},
+  prediction: null,
+  pythonTutorCode: '',
   gradingMode: 'doctest',
   prompt: '',
   starterCode: '',
@@ -164,6 +168,8 @@ export default function TaAssignmentEditorPage() {
       title: q.title,
       problemType: q.problem_type || 'coding',
       content: q.content || {},
+      prediction: q.prediction || null,
+      pythonTutorCode: q.python_tutor_code || '',
       gradingMode: q.grading_mode || 'doctest',
       prompt: q.prompt,
       starterCode: q.starter_code || '',
@@ -191,6 +197,8 @@ export default function TaAssignmentEditorPage() {
       title: form.title.trim(),
       problem_type: form.problemType,
       content: form.content,
+      prediction: form.prediction,
+      python_tutor_code: form.pythonTutorCode,
       grading_mode: form.gradingMode,
       prompt: form.prompt,
       starter_code: form.starterCode,
@@ -585,6 +593,25 @@ export default function TaAssignmentEditorPage() {
                 </div>
               )}
 
+              <PredictionEditor
+                prediction={form.prediction}
+                onChange={(prediction) => setForm((f) => ({ ...f, prediction }))}
+              />
+
+              <div className="panel">
+                <div className="panel-heading">
+                  <h4>Python Tutor diagram (optional)</h4>
+                  <span style={{ fontSize: 11, color: 'var(--muted)' }}>embedded stepper below the prompt</span>
+                </div>
+                <div className="panel-body">
+                  <CodeEditor
+                    code={form.pythonTutorCode}
+                    onChange={(v) => setForm((f) => ({ ...f, pythonTutorCode: v }))}
+                    editorLabel="python tutor code"
+                  />
+                </div>
+              </div>
+
               <div className="panel">
                 <div className="panel-heading">
                   <h4>Solution write-up (optional)</h4>
@@ -645,6 +672,13 @@ export default function TaAssignmentEditorPage() {
                 {!isCoding && (
                   <ProblemWidget readOnly problemType={form.problemType} content={form.content} />
                 )}
+                {form.prediction && (
+                  <p style={{ fontSize: 12, color: 'var(--brand)', marginTop: 10 }}>
+                    Note: a {form.prediction.mode === 'written' ? 'written reflection' : 'output prediction'} is
+                    required before advancing.
+                  </p>
+                )}
+                <PythonTutorPanel code={form.pythonTutorCode} />
               </div>
             </div>
           </div>

@@ -15,8 +15,8 @@ from server.models.worksheet import Question, Worksheet
 from server.services import advance as advance_service
 from server.services import cooldown as cooldown_service
 from server.services import grader_cooldown as grader_cooldown_service
+from server.models.group_prediction import GroupPrediction
 from server.services import response_grading
-from server.services.predict_examples import extract_predict_examples_for_question
 from server.utils import utcnow
 
 TA_ATTEMPT_HISTORY_LIMIT = 20
@@ -43,11 +43,19 @@ def _group_response(group_id, question_id):
     return answer, row.is_correct
 
 
+def question_prediction_config(question):
+    try:
+        return json.loads(question.prediction_json) if question.prediction_json else None
+    except (ValueError, TypeError):
+        return None
+
+
 def group_prediction_item(question, group_id):
-    """The prediction item this group drew — {index, code, expected} — from
-    GroupQuestionState.predict_example_json (see
+    """The output-prediction item this group drew — {index, code, expected}
+    — from GroupQuestionState.predict_example_json (see
     server/blueprints/groups.py:_get_or_create_state), or None."""
-    if (question.problem_type or "coding") != "prediction":
+    pred = question_prediction_config(question)
+    if not pred or pred.get("mode") != "output":
         return None
     state = GroupQuestionState.query.filter_by(group_id=group_id, question_id=question.id).first()
     idx = None
@@ -56,22 +64,31 @@ def group_prediction_item(question, group_id):
             idx = json.loads(state.predict_example_json).get("prediction_item")
         except (ValueError, AttributeError):
             idx = None
-    items = response_grading.parse_content(question).get("items") or []
+    items = pred.get("items") or []
     if not isinstance(idx, int) or not 0 <= idx < len(items):
         return None
     return {"index": idx, **items[idx]}
 
 
-def _prediction_public_content(question, group_id):
-    """What the student sees for a prediction question: the shared setup and
-    the drawn item's CODE — never any expected output."""
-    content = response_grading.parse_content(question)
-    item = group_prediction_item(question, group_id)
-    return {
-        "setup": content.get("setup", ""),
-        "item_count": len(content.get("items") or []),
-        "item": {"index": item["index"], "code": item["code"]} if item else None,
+def build_prediction(question, group_id):
+    """The `prediction` object in the student /state payload, or None when
+    the question has no prediction prompt. Never leaks expected outputs."""
+    pred = question_prediction_config(question)
+    if not pred:
+        return None
+    row = GroupPrediction.query.filter_by(group_id=group_id, question_id=question.id).first()
+    out = {
+        "mode": pred.get("mode", "output"),
+        "group_answer": row.prediction_text if row else None,
+        "group_correct": row.is_correct if row else None,
     }
+    if pred.get("mode") == "written":
+        out["prompt"] = pred.get("prompt", "")
+    else:
+        item = group_prediction_item(question, group_id)
+        out["setup"] = pred.get("setup", "")
+        out["item"] = {"index": item["index"], "code": item["code"]} if item else None
+    return out
 
 
 def build_group_state(group, progress, user, state):
@@ -99,11 +116,6 @@ def build_group_state(group, progress, user, state):
 
     code = state.code
     my_scratch = ScratchCode.query.filter_by(group_id=group.id, question_id=question.id, user_id=user.id).first()
-    predict_call = None
-    if state.predict_example_json:
-        # A 'prediction' question stashes {"prediction_item": idx} here
-        # instead of a {call, expected} pair — no predict_call for those.
-        predict_call = json.loads(state.predict_example_json).get("call")
 
     members = GroupMembership.query.options(joinedload(GroupMembership.user)).filter_by(group_id=group.id).all()
     stale_cutoff = utcnow() - timedelta(seconds=Config.TYPIST_STALE_SECONDS)
@@ -135,20 +147,6 @@ def build_group_state(group, progress, user, state):
                 "is_active": m.last_seen_at >= stale_cutoff,
             }
         )
-
-    last_attempt_row = (
-        Attempt.query.filter_by(group_id=group.id, question_id=question.id)
-        .order_by(Attempt.created_at.desc())
-        .first()
-    )
-    last_attempt = None
-    if last_attempt_row is not None:
-        last_attempt = {
-            "prediction": last_attempt_row.prediction_text,
-            "is_match": last_attempt_row.is_match,
-            "expected_output": question.expected_output,
-            "by": last_attempt_row.user.display_name,
-        }
 
     # Only the browser that clicked "Run tests" ever sees the outcome
     # locally — surfacing the group's last shared run here means every
@@ -190,19 +188,12 @@ def build_group_state(group, progress, user, state):
             # non-code answer widget on the client. `content` here is the
             # answer-stripped public view (see response_grading).
             "problem_type": question.problem_type or "coding",
-            "content": (
-                _prediction_public_content(question, group.id)
-                if (question.problem_type or "coding") == "prediction"
-                else response_grading.public_content(question)
-            ),
-            # expected_output is deliberately withheld here (only surfaces
-            # in last_attempt once someone has actually run it) — the same
-            # hygiene now applies to solution_markdown (never included in
-            # /state, only fetched on demand via GET /groups/:id/solution)
-            # and to the predict_example's expected value, which is never
-            # sent — only the call to predict is (predict_call).
-            "has_predict_flow": bool(question.expected_output),
-            "predict_call": predict_call,
+            "content": response_grading.public_content(question),
+            # The optional prediction prompt (any problem_type), answer
+            # stripped. null when the question has none. solution_markdown is
+            # likewise withheld — fetched on demand via GET /groups/:id/solution.
+            "prediction": build_prediction(question, group.id),
+            "python_tutor_code": question.python_tutor_code or "",
         },
         "worksheet_title": worksheet_title,
         "total_questions": total_questions_for_worksheet(progress.worksheet_id),
@@ -218,13 +209,13 @@ def build_group_state(group, progress, user, state):
         },
         "members": member_payload,
         "my_rating_value": my_rating,
-        "last_attempt": last_attempt,
         "last_shared_run": last_shared_run,
         # The group's shared answer to a non-code question (null for coding).
         "group_response": group_answer,
         "group_response_correct": group_answer_correct,
         "all_rated": advance_service.all_members_rated(group.id, question.id),
         "has_passing_run": advance_service.has_passing_shared_run(group.id, question.id),
+        "prediction_ready": advance_service.prediction_gate_met(group.id, question),
         "ready_to_advance": advance_service.ready_to_advance(group.id, question.id),
     }
 
@@ -303,6 +294,8 @@ def build_group_detail(group, progress, state):
                 if (question.problem_type or "coding") != "coding"
                 else None
             ),
+            "prediction": question_prediction_config(question),
+            "python_tutor_code": question.python_tutor_code or "",
         },
         "group_response": ta_group_answer,
         "group_response_correct": ta_group_answer_correct,
@@ -506,25 +499,6 @@ def student_worksheet_progress(user, worksheet):
     return (round(my_avg_rating, 1) if my_avg_rating is not None else None), progress.group_id
 
 
-def _predict_call_for(group, question):
-    """The same {call, ...} a live/current view of this question would show
-    (server/blueprints/groups.py:_get_or_create_state) — reused here rather
-    than randomly re-picked, so browsing back to a question shows the exact
-    call the group was actually quizzed on while it was current. Falls back
-    to computing one fresh (deterministically, the first candidate — not
-    random.choice, so it doesn't change on every page load) for a question
-    that was unlocked but never actually made current, which shouldn't
-    normally happen but isn't worth a hard failure over.
-    """
-    if (question.problem_type or "coding") != "coding":
-        return None
-    state = GroupQuestionState.query.filter_by(group_id=group.id, question_id=question.id).first()
-    if state is not None and state.predict_example_json:
-        return json.loads(state.predict_example_json).get("call")
-    examples = extract_predict_examples_for_question(question)
-    return examples[0]["call"] if examples else None
-
-
 def build_group_work(group, worksheet_id, user):
     """Replay of this group's already-*unlocked* questions on one
     assignment and their most recent submitted code (the latest shared
@@ -578,18 +552,15 @@ def build_group_work(group, worksheet_id, user):
                 "prompt": question.prompt,
                 "grading_mode": question.grading_mode,
                 "problem_type": question.problem_type or "coding",
-                "content": (
-                    _prediction_public_content(question, group.id)
-                    if (question.problem_type or "coding") == "prediction"
-                    else response_grading.public_content(question)
-                ),
+                "content": response_grading.public_content(question),
+                "prediction": build_prediction(question, group.id),
+                "python_tutor_code": question.python_tutor_code or "",
                 "group_response": group_answer,
                 "group_response_correct": group_answer_correct,
                 "code": latest_run.code_snapshot if latest_run else None,
                 "starter_code": question.starter_code or "",
                 "passed": advance_service.has_ever_passed_tests(group.id, question.id),
                 "scratch_code": scratch.code if scratch and scratch.code else None,
-                "predict_call": _predict_call_for(group, question),
                 "my_rating": rating.value if rating else None,
             }
         )

@@ -21,6 +21,7 @@ from sqlalchemy import update
 
 from server.extensions import db
 from server.models.group import GroupAssignmentProgress
+from server.models.group_prediction import GroupPrediction
 from server.models.question_response import QuestionResponse
 from server.models.rating import Rating
 from server.models.test_run import TestRun
@@ -40,6 +41,24 @@ def all_members_rated(group_id, question_id):
 def _has_correct_group_response(group_id, question_id):
     response = QuestionResponse.query.filter_by(group_id=group_id, question_id=question_id).first()
     return response is not None and response.is_correct is True
+
+
+def prediction_gate_met(group_id, question):
+    """True if the question's optional prediction prompt is satisfied (or
+    there is none). 'output' mode needs a correct group prediction;
+    'written' mode needs any non-empty group prediction."""
+    try:
+        pred = json.loads(question.prediction_json) if question.prediction_json else None
+    except (ValueError, TypeError):
+        pred = None
+    if not pred:
+        return True
+    row = GroupPrediction.query.filter_by(group_id=group_id, question_id=question.id).first()
+    if row is None:
+        return False
+    if pred.get("mode") == "written":
+        return bool((row.prediction_text or "").strip())
+    return row.is_correct is True
 
 
 def has_passing_shared_run(group_id, question_id):
@@ -66,17 +85,7 @@ def has_passing_shared_run(group_id, question_id):
         return True
 
     runs = TestRun.query.filter_by(group_id=group_id, question_id=question_id, source="shared", status="done").all()
-    for run in runs:
-        if run.total_count == 0 or run.passed_count != run.total_count:
-            continue
-        try:
-            results = json.loads(run.results_json)
-        except ValueError:
-            continue
-        feedback = results.get("prediction_feedback")
-        if feedback and feedback.get("is_match"):
-            return True
-    return False
+    return any(run.total_count > 0 and run.passed_count == run.total_count for run in runs)
 
 
 def has_ever_passed_tests(group_id, question_id):
@@ -105,7 +114,10 @@ def has_ever_passed_tests(group_id, question_id):
 
 
 def ready_to_advance(group_id, question_id):
-    return all_members_rated(group_id, question_id) and has_passing_shared_run(group_id, question_id)
+    if not (all_members_rated(group_id, question_id) and has_passing_shared_run(group_id, question_id)):
+        return False
+    question = Question.query.get(question_id)
+    return question is None or prediction_gate_met(group_id, question)
 
 
 def try_advance(progress, group_id, question_id, force=False):
@@ -129,7 +141,10 @@ def try_advance(progress, group_id, question_id, force=False):
     if not force and not all_members_rated(group_id, question_id):
         return False, "not everyone has rated this question yet"
     if not has_passing_shared_run(group_id, question_id):
-        return False, "the group hasn't passed the tests (and correctly predicted the output) yet"
+        return False, "the group hasn't finished this question yet"
+    question = Question.query.get(question_id)
+    if question is not None and not prediction_gate_met(group_id, question):
+        return False, "the group hasn't made its prediction yet"
 
     expected_index = progress.current_question_index
     result = db.session.execute(

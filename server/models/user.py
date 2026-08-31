@@ -9,9 +9,13 @@ class User(db.Model):
     display_name = db.Column(db.String(80), nullable=False)
     # 'student' | 'ta' | 'admin'. Unlike student/ta (self-selected at
     # login — see blueprints/auth.py), 'admin' is never offered on the
-    # login form: it's granted out of band (seed data or a direct DB edit),
-    # mirroring how a real Canvas/bCourses "admin" designation comes from
-    # the roster/enrollment system rather than something a user picks.
+    # login form: it's granted out of band — seed data, the `create-admin`
+    # CLI (server/app.py), or an existing admin via the Admin page
+    # (POST /api/admins) — mirroring how a real Canvas/bCourses "admin"
+    # designation comes from the roster/enrollment system rather than
+    # something a user picks. It's a single column, and 'admin' is a strict
+    # superset of 'ta'/'student' (server/auth.py), so a promotion is
+    # additive: the person keeps every ability their old role had.
     role = db.Column(db.String(10), nullable=False)
     # Optional today (the login form doesn't require it) — but when given,
     # it's the identity key roster imports match against (see

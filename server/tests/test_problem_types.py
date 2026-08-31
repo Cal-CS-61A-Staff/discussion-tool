@@ -223,22 +223,25 @@ def test_worksheet_grades_count_a_correct_multiple_choice(app, client):
     assert row["questions_passed"] == 1
 
 
-# --- prediction questions -------------------------------------------------
+# --- the optional prediction prompt (any problem_type) -------------------
 
 DOCTEST_BLOCK = ">>> 1 + 1\n2\n>>> sorted([3, 1, 2])\n[1, 2, 3]\n"
 
 
-def _make_prediction_question(worksheet_id, doctest_text=DOCTEST_BLOCK, setup=""):
-    clean, err = response_grading.validate_content("prediction", {"setup": setup, "doctest": doctest_text})
-    assert err is None, err
+def _make_question(worksheet_id, prediction=None):
+    pred_json = None
+    if prediction:
+        clean, err = response_grading.validate_prediction(prediction)
+        assert err is None, err
+        pred_json = json.dumps(clean)
     q = Question(
         worksheet_id=worksheet_id,
         order_index=0,
-        title="Predict",
-        prompt="what prints?",
-        problem_type="prediction",
+        title="Q",
+        prompt="a conceptual prompt",
+        problem_type="coding",
         grading_mode="discussion",
-        content_json=json.dumps(clean),
+        prediction_json=pred_json,
     )
     db.session.add(q)
     db.session.commit()
@@ -256,45 +259,90 @@ def test_parse_prediction_items_splits_a_doctest_block():
     assert err2 is not None
 
 
-def test_prediction_state_gives_one_item_without_the_answer(app, client):
+def test_validate_prediction_modes():
+    clean, err = response_grading.validate_prediction({"mode": "output", "doctest": DOCTEST_BLOCK})
+    assert err is None and len(clean["items"]) == 2
+    clean, err = response_grading.validate_prediction({"mode": "written", "prompt": "why?"})
+    assert err is None and clean == {"mode": "written", "prompt": "why?"}
+    _, err = response_grading.validate_prediction({"mode": "written", "prompt": ""})
+    assert err is not None
+    assert response_grading.validate_prediction(None) == (None, None)
+
+
+def test_output_prediction_state_hides_the_answer(app, client):
     s = _setup()
-    q = _make_prediction_question(s["worksheet"].id)
+    q = _make_question(s["worksheet"].id, {"mode": "output", "doctest": DOCTEST_BLOCK})
 
     login_as(client, s["student"])
     resp = client.get(f"/api/groups/{s['group'].id}/state?worksheet_id={s['worksheet'].id}")
     assert resp.status_code == 200
-    content = resp.get_json()["question"]["content"]
-    assert content["item_count"] == 2
-    assert content["item"]["code"] in {"1 + 1", "sorted([3, 1, 2])"}
-    assert "expected" not in json.dumps(content)
+    pred = resp.get_json()["question"]["prediction"]
+    assert pred["mode"] == "output"
+    assert pred["item"]["code"] in {"1 + 1", "sorted([3, 1, 2])"}
+    assert "expected" not in json.dumps(pred)
 
 
-def test_prediction_grading_against_the_drawn_item(app, client):
+def test_output_prediction_gates_advancing(app, client):
     s = _setup()
-    q = _make_prediction_question(s["worksheet"].id)
+    q = _make_question(s["worksheet"].id, {"mode": "output", "doctest": DOCTEST_BLOCK})
+    gid, wid = s["group"].id, s["worksheet"].id
+    from server.services import serializers
+
+    login_as(client, s["student"])
+    client.get(f"/api/groups/{gid}/state?worksheet_id={wid}")
+    item = serializers.group_prediction_item(q, gid)
+    db.session.add(Rating(group_id=gid, question_id=q.id, user_id=s["student"].id, value=4))
+    db.session.commit()
+
+    url = f"/api/groups/{gid}/worksheets/{wid}/questions/{q.id}/prediction"
+    assert client.post(url, json={"text": "not it"}).get_json()["is_correct"] is False
+    assert advance_service.ready_to_advance(gid, q.id) is False
+
+    assert client.post(url, json={"text": item["expected"]}).get_json()["is_correct"] is True
+    assert advance_service.ready_to_advance(gid, q.id) is True
+
+
+def test_written_prediction_gates_until_submitted(app, client):
+    s = _setup()
+    q = _make_question(s["worksheet"].id, {"mode": "written", "prompt": "describe your process"})
     gid, wid = s["group"].id, s["worksheet"].id
 
     login_as(client, s["student"])
-    # Draw the item (as the live page would by polling /state).
-    client.get(f"/api/groups/{gid}/state?worksheet_id={wid}")
-    from server.services import serializers
-
-    item = serializers.group_prediction_item(q, gid)
-    assert item is not None
-
-    url = f"/api/groups/{gid}/worksheets/{wid}/questions/{q.id}/response"
-    wrong = client.post(url, json={"response": "definitely not it"})
-    assert wrong.get_json()["is_correct"] is False
-
     db.session.add(Rating(group_id=gid, question_id=q.id, user_id=s["student"].id, value=4))
     db.session.commit()
     assert advance_service.ready_to_advance(gid, q.id) is False
 
-    right = client.post(url, json={"response": item["expected"]})
-    assert right.get_json()["is_correct"] is True
+    resp = client.post(f"/api/groups/{gid}/worksheets/{wid}/questions/{q.id}/prediction", json={"text": "we did X"})
+    assert resp.get_json()["is_correct"] is None
+    assert advance_service.ready_to_advance(gid, q.id) is True
+
+
+def test_no_prediction_means_no_gate(app, client):
+    s = _setup()
+    q = _make_question(s["worksheet"].id, prediction=None)
+    gid = s["group"].id
+    db.session.add(Rating(group_id=gid, question_id=q.id, user_id=s["student"].id, value=4))
+    db.session.commit()
     assert advance_service.ready_to_advance(gid, q.id) is True
 
 
 def test_prediction_output_match_is_whitespace_tolerant(app):
     assert response_grading.check_prediction("[1, 2, 3]", "  [1, 2, 3]  \n") is True
     assert response_grading.check_prediction("2", "3") is False
+
+
+def test_python_tutor_code_round_trips(app, client):
+    s = _setup()
+    login_as(client, s["ta"])
+    wid = s["worksheet"].id
+    resp = client.post(
+        f"/api/worksheets/{wid}/questions",
+        json={"title": "diagram", "prompt": "step through", "problem_type": "text_markdown", "content": {},
+              "python_tutor_code": "x = 1\ny = x + 1"},
+    )
+    assert resp.status_code == 201
+    assert resp.get_json()["question"]["python_tutor_code"] == "x = 1\ny = x + 1"
+
+    login_as(client, s["student"])
+    state = client.get(f"/api/groups/{s['group'].id}/state?worksheet_id={wid}").get_json()
+    assert state["question"]["python_tutor_code"] == "x = 1\ny = x + 1"

@@ -15,19 +15,23 @@ question types (Question.problem_type != 'coding').
   plain_text          {"min_length": int}     (free response, stored, never checked)
   image               {"url": str, "alt": str, "max_width": int}
   iframe              {"url": str, "height": int}
-  prediction          {"setup": str, "doctest": str,      -- raw TA input
-                        "items": [{"code": str, "expected": str}, ...]}
-                       -- items parsed from `doctest` on save and verified
-                          in the sandbox; one is drawn at random per group
-                          (GroupQuestionState.predict_example_json holds the
-                          chosen index) and the student predicts its output.
+  counterexample      {"params": [{"name": str}], "call": str,
+                       "buggy_code": str, "reference_code": str,
+                       "constraints": str, "setup": str}
+                       -- student supplies input values; graded by running
+                          buggy vs reference in the sandbox on submit
+                          (server/blueprints/groups.py) -- correct if the
+                          outputs differ or the buggy code times out.
+
+The optional prediction prompt (Question.prediction_json, ANY problem_type)
+is validated by `validate_prediction` here but stored on its own column.
 
 The student's stored `response_json` shape by type:
   choice types        list[int]   selected option indices
   fill blank types    list[str]   one string per blank, in order
   short_answer        str
   plain_text          str
-  prediction          str         the predicted program output
+  counterexample      {param_name: str, ...}   one literal per input
 """
 
 import doctest
@@ -37,11 +41,37 @@ import re
 CHOICE_TYPES = {"multiple_choice", "dropdown"}
 FILL_BLANK_TYPES = {"fill_blank_code", "fill_blank_markdown"}
 DISPLAY_TYPES = {"text_markdown", "image", "iframe", "plain_text"}
-GRADEABLE_TYPES = CHOICE_TYPES | FILL_BLANK_TYPES | {"short_answer", "prediction"}
+# counterexample is auto-checkable but graded out-of-band (needs the sandbox),
+# so check_response returns None for it and the endpoint stores is_correct.
+GRADEABLE_TYPES = CHOICE_TYPES | FILL_BLANK_TYPES | {"short_answer", "counterexample"}
 NONCODE_TYPES = GRADEABLE_TYPES | DISPLAY_TYPES
 ALL_PROBLEM_TYPES = {"coding"} | NONCODE_TYPES
 
 BLANK_MARKER = re.compile(r"\[\[(\d+)\]\]")
+
+
+def validate_prediction(pred):
+    """The optional prediction prompt, on any problem_type. Returns
+    (clean_dict, None) or (None, error). NULL/empty -> (None, None)."""
+    if not pred or not isinstance(pred, dict):
+        return None, None
+    mode = pred.get("mode") or "output"
+    if mode not in ("output", "written"):
+        return None, "prediction mode must be 'output' or 'written'"
+    if mode == "written":
+        prompt = (pred.get("prompt") or "").strip()
+        if not prompt:
+            return None, "a written prediction needs a prompt"
+        return {"mode": "written", "prompt": prompt}, None
+    items, err = parse_prediction_items(pred.get("doctest") or "")
+    if err:
+        return None, err
+    return {
+        "mode": "output",
+        "setup": pred.get("setup") or "",
+        "doctest": pred.get("doctest") or "",
+        "items": items,
+    }, None
 
 
 def parse_prediction_items(doctest_text):
@@ -103,11 +133,12 @@ def _as_index_set(response):
 
 
 def is_auto_checkable(question):
-    """True when a submitted answer can be marked right/wrong in-process
-    (so a correct group answer gates advancing). A short_answer with no
-    model answer is a prompt, not a graded question."""
+    """True when a submitted answer can be marked right/wrong (so a correct
+    group answer gates advancing). A short_answer with no model answer is a
+    prompt, not a graded question. 'counterexample' is checked in the
+    sandbox by the submit endpoint, not here."""
     ptype = getattr(question, "problem_type", "coding")
-    if ptype in CHOICE_TYPES or ptype in FILL_BLANK_TYPES or ptype == "prediction":
+    if ptype in CHOICE_TYPES or ptype in FILL_BLANK_TYPES or ptype == "counterexample":
         return True
     if ptype == "short_answer":
         content = parse_content(question)
@@ -131,18 +162,14 @@ def check_prediction(expected, response):
     return normalize_output(response) == normalize_output(expected)
 
 
-def check_response(question, response, *, prediction_expected=None):
+def check_response(question, response):
     """Returns True/False for auto-checkable questions, or None when the
-    type isn't graded (display types, ungraded short_answer/plain_text).
-    `prediction_expected` is the drawn item's verified output — the caller
-    resolves it from the group's GroupQuestionState."""
+    type isn't graded in-process (display types, ungraded short_answer /
+    plain_text, and 'counterexample' which the endpoint grades via the
+    sandbox)."""
     ptype = getattr(question, "problem_type", "coding")
-    if not is_auto_checkable(question):
+    if not is_auto_checkable(question) or ptype == "counterexample":
         return None
-    if ptype == "prediction":
-        if prediction_expected is None:
-            return None
-        return check_prediction(prediction_expected, response)
     content = parse_content(question)
 
     if ptype in CHOICE_TYPES:
@@ -207,11 +234,13 @@ def public_content(question):
     if ptype == "iframe":
         return {"url": content.get("url", ""), "height": content.get("height") or 400}
 
-    if ptype == "prediction":
-        # The chosen item's code is spliced in per-group by the serializer
-        # (it needs GroupQuestionState); here we only expose the shared
-        # setup and the item count. Never the expected outputs.
-        return {"setup": content.get("setup", ""), "item_count": len(content.get("items") or [])}
+    if ptype == "counterexample":
+        return {
+            "params": content.get("params") or [],
+            "call": content.get("call", ""),
+            "buggy_code": content.get("buggy_code", ""),
+            "constraints": content.get("constraints", ""),
+        }
 
     return {}  # text_markdown
 
@@ -309,14 +338,34 @@ def validate_content(problem_type, content):
             height = 400
         return {"url": url, "height": max(100, height)}, None
 
-    if problem_type == "prediction":
-        setup = content.get("setup") or ""
-        doctest_text = content.get("doctest") or ""
-        items, err = parse_prediction_items(doctest_text)
-        if err:
-            return None, err
-        # The parsed `expected` values are re-verified against the sandbox
-        # by server/blueprints/admin.py before the save is accepted.
-        return {"setup": setup, "doctest": doctest_text, "items": items}, None
+    if problem_type == "counterexample":
+        import ast
+
+        params = []
+        for p in content.get("params") or []:
+            name = (p.get("name") or "").strip() if isinstance(p, dict) else str(p).strip()
+            if name.isidentifier():
+                params.append({"name": name})
+        if not params:
+            return None, "at least one input parameter is required"
+        call = (content.get("call") or "").strip()
+        if not call:
+            return None, "a call template (e.g. race(x, y)) is required"
+        for key in ("buggy_code", "reference_code"):
+            src = content.get(key) or ""
+            if not src.strip():
+                return None, f"{key.replace('_', ' ')} is required"
+            try:
+                ast.parse(src)
+            except SyntaxError as exc:
+                return None, f"{key.replace('_', ' ')} has a syntax error: {exc}"
+        return {
+            "params": params,
+            "call": call,
+            "buggy_code": content["buggy_code"],
+            "reference_code": content["reference_code"],
+            "constraints": (content.get("constraints") or "").strip(),
+            "setup": content.get("setup") or "",
+        }, None
 
     return None, f"unknown problem_type: {problem_type}"

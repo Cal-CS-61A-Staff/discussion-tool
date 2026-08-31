@@ -3,6 +3,7 @@
  * object. See server/services/response_grading.py:validate_content for
  * what the server expects.
  */
+import CodeEditor from '../student/CodeEditor.jsx';
 
 export const PROBLEM_TYPE_DEFAULT_CONTENT = {
   multiple_choice: () => ({
@@ -21,7 +22,7 @@ export const PROBLEM_TYPE_DEFAULT_CONTENT = {
   fill_blank_code: () => ({ template: '', blanks: [] }),
   fill_blank_markdown: () => ({ template: '', blanks: [] }),
   short_answer: () => ({ answer: '', accept: [], case_sensitive: false }),
-  prediction: () => ({ setup: '', doctest: '', items: [] }),
+  counterexample: () => ({ params: [{ name: 'x' }], call: '', buggy_code: '', reference_code: '', constraints: '', setup: '' }),
   text_markdown: () => ({}),
   plain_text: () => ({ min_length: 0 }),
   image: () => ({ url: '', alt: '', max_width: '' }),
@@ -219,41 +220,70 @@ export default function ProblemTypeEditor({ type, content, onChange }) {
     );
   }
 
-  if (type === 'prediction') {
-    const itemCount = (String(c.doctest || '').match(/^\s*>>>/gm) || []).length;
+  if (type === 'counterexample') {
+    const params = c.params || [];
+    const setParams = (str) =>
+      onChange({
+        ...c,
+        params: str
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .map((name) => ({ name })),
+      });
     return (
       <>
         <div className="form-group">
-          <label htmlFor="pt-pred-setup">Setup code (optional)</label>
-          <p style={{ fontSize: 12, color: 'var(--muted)', margin: '2px 0 6px' }}>
-            Runs before every snippet. Hidden from students.
-          </p>
+          <label htmlFor="pt-ce-params">Input parameters (comma-separated)</label>
+          <input
+            id="pt-ce-params"
+            className="form-control"
+            value={params.map((p) => p.name).join(', ')}
+            onChange={(e) => setParams(e.target.value)}
+            placeholder="x, y"
+          />
+        </div>
+        <div className="form-group">
+          <label htmlFor="pt-ce-call">Call template — how to invoke it with those inputs</label>
+          <input
+            id="pt-ce-call"
+            className="form-control code"
+            value={c.call || ''}
+            onChange={(e) => onChange({ ...c, call: e.target.value })}
+            placeholder="race(x, y)"
+          />
+        </div>
+        <div className="form-group">
+          <label>Buggy code — shown to students</label>
+          <CodeEditor code={c.buggy_code || ''} onChange={(v) => onChange({ ...c, buggy_code: v })} editorLabel="buggy code" />
+        </div>
+        <div className="form-group">
+          <label>Reference solution — hidden, the correct behavior to compare against</label>
+          <CodeEditor
+            code={c.reference_code || ''}
+            onChange={(v) => onChange({ ...c, reference_code: v })}
+            editorLabel="reference code"
+          />
+        </div>
+        <div className="form-group">
+          <label htmlFor="pt-ce-constraints">Constraints on the inputs (optional, a Python expression)</label>
+          <input
+            id="pt-ce-constraints"
+            className="form-control code"
+            value={c.constraints || ''}
+            onChange={(e) => onChange({ ...c, constraints: e.target.value })}
+            placeholder="y > x and y <= 2 * x"
+          />
+        </div>
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label htmlFor="pt-ce-setup">Setup code (optional)</label>
           <textarea
-            id="pt-pred-setup"
+            id="pt-ce-setup"
             className="form-control code"
             rows={3}
             value={c.setup || ''}
             onChange={(e) => onChange({ ...c, setup: e.target.value })}
           />
-        </div>
-        <div className="form-group" style={{ marginBottom: 0 }}>
-          <label htmlFor="pt-pred-doctest">Prediction items</label>
-          <p style={{ fontSize: 12, color: 'var(--muted)', margin: '2px 0 6px' }}>
-            One <code className="code">&gt;&gt;&gt;</code> example per item, with its expected output on the line(s)
-            below — just like a doctest. Students are shown the code for one randomly-chosen item and predict its
-            output; the expected values are checked against the sandbox when you save and never shown to students.
-          </p>
-          <textarea
-            id="pt-pred-doctest"
-            className="form-control code"
-            rows={8}
-            value={c.doctest || ''}
-            onChange={(e) => onChange({ ...c, doctest: e.target.value })}
-            placeholder={'>>> 1 + 1\n2\n>>> sorted([3, 1, 2])\n[1, 2, 3]'}
-          />
-          <p style={{ fontSize: 12, color: 'var(--muted)', margin: '6px 0 0' }}>
-            {itemCount} prediction item{itemCount === 1 ? '' : 's'} detected.
-          </p>
         </div>
       </>
     );

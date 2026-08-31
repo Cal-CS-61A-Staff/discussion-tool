@@ -34,6 +34,11 @@ export default function AdminPage() {
   const [addingTa, setAddingTa] = useState(false);
   const [addTaError, setAddTaError] = useState('');
 
+  const [newAdminEmail, setNewAdminEmail] = useState('');
+  const [newAdminName, setNewAdminName] = useState('');
+  const [addingAdmin, setAddingAdmin] = useState(false);
+  const [addAdminError, setAddAdminError] = useState('');
+
   const readFileText = (file) =>
     new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -141,6 +146,23 @@ export default function AdminPage() {
     }
   };
 
+  const handleAddAdmin = async (e) => {
+    e.preventDefault();
+    if (!newAdminEmail.trim()) return;
+    setAddingAdmin(true);
+    setAddAdminError('');
+    try {
+      await adminApi.addAdmin(newAdminEmail.trim(), newAdminName.trim() || undefined);
+      setNewAdminEmail('');
+      setNewAdminName('');
+      load();
+    } catch (err) {
+      setAddAdminError(err.message);
+    } finally {
+      setAddingAdmin(false);
+    }
+  };
+
   if (user.role !== 'admin') {
     return (
       <div className="panel">
@@ -152,6 +174,8 @@ export default function AdminPage() {
   if (loading) return <div className="page-loading">Loading…</div>;
 
   const visibleSections = filterClassId ? sections.filter((s) => s.class_id === filterClassId) : sections;
+  // listTas() already returns 'ta' and 'admin' users together, tagged with role.
+  const admins = tas.filter((t) => t.role === 'admin');
 
   return (
     <div>
@@ -289,6 +313,54 @@ export default function AdminPage() {
       <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8 }}>
         A TA added by email can be assigned to a section right away, before they've ever signed in.
       </p>
+
+      <div className="panel" style={{ marginTop: 24 }}>
+        <div className="panel-heading">
+          <h4>Admins</h4>
+        </div>
+        <div className="panel-body">
+          <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 0 }}>
+            Granting admin is additive — it layers every admin-only power (assigning section TAs,
+            creating and archiving classes, roster imports) on top of whatever the person can already
+            do, so a TA promoted here keeps all their sections. Matched by email; a brand-new account
+            can be granted admin before they've ever signed in.
+          </p>
+          {admins.length > 0 && (
+            <ul style={{ margin: '0 0 12px', paddingLeft: 18, fontSize: 13 }}>
+              {admins.map((a) => (
+                <li key={a.id}>
+                  {a.display_name}
+                  {a.email ? ` — ${a.email}` : ''}
+                  {a.id === user.id && ' (you)'}
+                </li>
+              ))}
+            </ul>
+          )}
+          <form onSubmit={handleAddAdmin} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <input
+              className="form-control"
+              style={{ maxWidth: 240 }}
+              type="email"
+              value={newAdminEmail}
+              onChange={(e) => setNewAdminEmail(e.target.value)}
+              placeholder="new admin's email"
+              disabled={addingAdmin}
+            />
+            <input
+              className="form-control"
+              style={{ maxWidth: 200 }}
+              value={newAdminName}
+              onChange={(e) => setNewAdminName(e.target.value)}
+              placeholder="name (optional)"
+              disabled={addingAdmin}
+            />
+            <button className="btn btn-sm" type="submit" disabled={addingAdmin || !newAdminEmail.trim()}>
+              {addingAdmin ? 'Adding…' : '+ Add an admin'}
+            </button>
+          </form>
+          {addAdminError && <div className="alert alert-danger" style={{ marginTop: 8 }}>{addAdminError}</div>}
+        </div>
+      </div>
 
       <div className="panel" style={{ marginTop: 24 }}>
         <div className="panel-heading">
