@@ -212,7 +212,7 @@ export default function TaAssignmentEditorPage() {
       </div>
       <div className="page-header-row">
         <h1>Edit — {worksheet?.title}</h1>
-        <p>Each question is a slide — pick one on the left, edit it on the right, drag to reorder.</p>
+        <p>Each question is a slide — pick one on the left, edit it in the middle, preview what students see on the right. Drag to reorder.</p>
       </div>
 
       {error && <div className="alert alert-danger">{error}</div>}
@@ -259,6 +259,15 @@ export default function TaAssignmentEditorPage() {
 
       <div className="editor-columns">
         <div className="editor-slide-rail">
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            style={{ width: '100%', marginBottom: 10 }}
+            onClick={() => setSelectedId(NEW_SLIDE_ID)}
+            disabled={selectedId === NEW_SLIDE_ID}
+          >
+            + Add question
+          </button>
           {reordering && (
             <p style={{ fontSize: 11, color: 'var(--muted)', margin: '0 0 6px' }}>Saving order…</p>
           )}
@@ -290,37 +299,10 @@ export default function TaAssignmentEditorPage() {
               </button>
             </div>
           ))}
-          <div
-            className={`editor-slide-row editor-slide-add ${selectedId === NEW_SLIDE_ID ? 'selected' : ''}`}
-            onClick={() => setSelectedId(NEW_SLIDE_ID)}
-          >
-            + Add question
-          </div>
         </div>
 
         {selectedId !== null && (
           <div className="editor-panes">
-            <div className="panel editor-preview-pane">
-              <div className="panel-heading">
-                <h4>Preview</h4>
-                <span style={{ fontSize: 11, color: 'var(--muted)' }}>what students see</span>
-              </div>
-              <div className="panel-body">
-                <div className="q-label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span>{form.title || 'Untitled question'}</span>
-                  <span className="badge badge-default">
-                    {GRADING_MODE_OPTIONS.find((o) => o.value === form.gradingMode)?.label || form.gradingMode}
-                  </span>
-                </div>
-                <MarkdownContent content={form.prompt || '_Nothing written yet._'} />
-                {form.starterCode && (
-                  <pre className="code-editor-wrap" style={{ padding: 10, color: '#eee', margin: 0 }}>
-                    <code className="code">{form.starterCode}</code>
-                  </pre>
-                )}
-              </div>
-            </div>
-
             <form className="editor-form-pane" onSubmit={handleSave}>
               <div className="panel">
                 <div className="panel-body">
@@ -526,6 +508,27 @@ export default function TaAssignmentEditorPage() {
                 {saving ? 'Validating & saving…' : selectedId === NEW_SLIDE_ID ? 'Add question' : 'Save changes'}
               </button>
             </form>
+
+            <div className="panel editor-preview-pane">
+              <div className="panel-heading">
+                <h4>Preview</h4>
+                <span style={{ fontSize: 11, color: 'var(--muted)' }}>what students see</span>
+              </div>
+              <div className="panel-body">
+                <div className="q-label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span>{form.title || 'Untitled question'}</span>
+                  <span className="badge badge-default">
+                    {GRADING_MODE_OPTIONS.find((o) => o.value === form.gradingMode)?.label || form.gradingMode}
+                  </span>
+                </div>
+                <MarkdownContent content={form.prompt || '_Nothing written yet._'} />
+                {form.starterCode && (
+                  <pre className="code-editor-wrap" style={{ padding: 10, color: '#eee', margin: 0 }}>
+                    <code className="code">{form.starterCode}</code>
+                  </pre>
+                )}
+              </div>
+            </div>
           </div>
         )}
       </div>

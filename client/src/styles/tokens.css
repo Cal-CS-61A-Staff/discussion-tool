@@ -1008,16 +1008,6 @@ a:hover {
 .editor-slide-delete:hover {
   color: #c0392b;
 }
-.editor-slide-add {
-  cursor: pointer;
-  justify-content: center;
-  color: var(--brand);
-  font-weight: 600;
-  border-style: dashed;
-}
-.editor-slide-add.selected {
-  border-style: solid;
-}
 .editor-panes {
   flex: 1;
   min-width: 0;
