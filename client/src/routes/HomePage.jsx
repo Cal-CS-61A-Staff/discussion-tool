@@ -16,7 +16,6 @@ export default function HomePage() {
   const [showNewForm, setShowNewForm] = useState(false);
   const [newCourseName, setNewCourseName] = useState('');
   const [creating, setCreating] = useState(false);
-  const [archivingId, setArchivingId] = useState(null);
 
   const load = () => {
     sectionsApi
@@ -43,19 +42,6 @@ export default function HomePage() {
       setError(err.message);
     } finally {
       setCreating(false);
-    }
-  };
-
-  const handleToggleArchive = async (course) => {
-    setArchivingId(course.id);
-    setError('');
-    try {
-      await adminApi.archiveClass(course.id, !course.is_archived);
-      load();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setArchivingId(null);
     }
   };
 
@@ -119,14 +105,7 @@ export default function HomePage() {
             </button>
           ))}
         {activeClasses.map((c) => (
-          <CourseCard
-            key={c.id}
-            course={c}
-            onClick={() => viewCourse(c)}
-            isAdmin={isAdmin(user)}
-            onToggleArchive={() => handleToggleArchive(c)}
-            archiving={archivingId === c.id}
-          />
+          <CourseCard key={c.id} course={c} onClick={() => viewCourse(c)} />
         ))}
         {activeClasses.length === 0 && !isAdmin(user) && (
           <p style={{ color: 'var(--muted)' }}>No active classes yet.</p>
@@ -140,14 +119,7 @@ export default function HomePage() {
           </div>
           <div className="card-holder">
             {pastClasses.map((c) => (
-              <CourseCard
-                key={c.id}
-                course={c}
-                onClick={() => viewCourse(c)}
-                isAdmin={isAdmin(user)}
-                onToggleArchive={() => handleToggleArchive(c)}
-                archiving={archivingId === c.id}
-              />
+              <CourseCard key={c.id} course={c} onClick={() => viewCourse(c)} />
             ))}
           </div>
         </>

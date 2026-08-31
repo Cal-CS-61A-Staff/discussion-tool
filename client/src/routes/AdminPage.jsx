@@ -7,10 +7,12 @@ import { useAuth } from '../context/AuthContext.jsx';
 export default function AdminPage() {
   const { user } = useAuth();
   const [sections, setSections] = useState([]);
+  const [classes, setClasses] = useState([]);
   const [tas, setTas] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [savingId, setSavingId] = useState(null);
+  const [archivingId, setArchivingId] = useState(null);
 
   const [filterClassId, setFilterClassId] = useState(null);
 
@@ -26,9 +28,10 @@ export default function AdminPage() {
 
   const load = () => {
     setLoading(true);
-    Promise.all([sectionsApi.listSections(), adminApi.listTas()])
-      .then(([sectionsRes, tasRes]) => {
+    Promise.all([sectionsApi.listSections(), sectionsApi.listClasses(), adminApi.listTas()])
+      .then(([sectionsRes, classesRes, tasRes]) => {
         setSections(sectionsRes.sections);
+        setClasses(classesRes.classes);
         setTas(tasRes.tas);
       })
       .catch((err) => setError(err.message))
@@ -68,6 +71,19 @@ export default function AdminPage() {
     }
   };
 
+  const handleToggleArchive = async (klass) => {
+    setArchivingId(klass.id);
+    setError('');
+    try {
+      await adminApi.archiveClass(klass.id, !klass.is_archived);
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setArchivingId(null);
+    }
+  };
+
   const handleImportEnrollment = async (e) => {
     e.preventDefault();
     setEnrollmentImporting(true);
@@ -94,13 +110,6 @@ export default function AdminPage() {
 
   if (loading) return <div className="page-loading">Loading…</div>;
 
-  // Sections don't come with a standalone "classes" list — derive the
-  // unique set from what's already loaded rather than a second API call.
-  const classesById = new Map();
-  sections.forEach((s) => {
-    if (!classesById.has(s.class_id)) classesById.set(s.class_id, { id: s.class_id, course_name: s.course_name });
-  });
-  const classes = [...classesById.values()];
   const visibleSections = filterClassId ? sections.filter((s) => s.class_id === filterClassId) : sections;
 
   return (
@@ -122,6 +131,53 @@ export default function AdminPage() {
 
       {error && <div className="alert alert-danger">{error}</div>}
 
+      <div className="panel">
+        <div className="panel-heading">
+          <h4>Classes</h4>
+        </div>
+        <div className="table-wrap">
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th>Class</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {classes.map((klass) => (
+                <tr key={klass.id}>
+                  <td>{klass.course_name}</td>
+                  <td>
+                    <span className={`badge ${klass.is_archived ? 'badge-default' : 'badge-success'}`}>
+                      {klass.is_archived ? 'Archived' : 'Active'}
+                    </span>
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => handleToggleArchive(klass)}
+                      disabled={archivingId === klass.id}
+                    >
+                      {archivingId === klass.id ? '…' : klass.is_archived ? 'Restore' : 'Archive'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {classes.length === 0 && (
+                <tr>
+                  <td colSpan={3} style={{ color: 'var(--muted)', textAlign: 'center', padding: 20 }}>
+                    No classes yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <h3>Section TAs</h3>
       <div className="table-wrap">
         <table className="admin-table">
           <thead>

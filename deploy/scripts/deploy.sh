@@ -1,14 +1,16 @@
 #!/bin/bash
-# Manual deploy: pull the latest main, rebuild anything that changed, apply
-# migrations, restart services. Deliberately not wired to auto-run on push —
-# this is a live tool students use during actual discussion sections, so
-# deploys happen on purpose, not automatically on every commit.
+# Pulls the latest main, rebuilds anything that changed, applies
+# migrations, restarts services. Invoked automatically by
+# .github/workflows/deploy.yml (as the `deploy` user, over SSH) once CI
+# passes on a push to main — this file is what actually runs on the VM,
+# not just a local convenience script.
 #
-# Run this as a sudo-capable admin user (not as `cs61a` itself — restarting
-# a systemd unit needs root, which the app's own unprivileged user
-# deliberately doesn't have): `bash deploy/scripts/deploy.sh` from
-# /opt/cs61a-discussion. It delegates the file-ownership-sensitive steps
-# (git pull, installing deps, building) to the `cs61a` user internally.
+# Can also be run by hand as a sudo-capable admin user (not as `cs61a`
+# itself — restarting a systemd unit needs root, which the app's own
+# unprivileged user deliberately doesn't have): `bash
+# deploy/scripts/deploy.sh` from /opt/cs61a-discussion. It delegates the
+# file-ownership-sensitive steps (git pull, installing deps, building) to
+# the `cs61a` user internally.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 REPO_DIR="$(pwd)"

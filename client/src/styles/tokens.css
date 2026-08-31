@@ -325,34 +325,13 @@ a:hover {
 }
 
 .course-card-heading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 160px;
-  padding: 18px 14px;
+  padding: 16px 14px;
   background: var(--brand);
   color: #fff;
-  position: relative;
-  text-align: center;
 }
 .course-card-heading h4 {
   margin: 0;
-  font-size: 18px;
-}
-.course-card-archive-link {
-  position: absolute;
-  top: 10px;
-  right: 12px;
-  background: none;
-  border: none;
-  padding: 2px 4px;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.8);
-  text-decoration: underline;
-  cursor: pointer;
-}
-.course-card-archive-link:hover {
-  color: #fff;
+  font-size: 16px;
 }
 .course-card-create {
   display: flex;
@@ -360,7 +339,7 @@ a:hover {
   justify-content: center;
   flex-direction: column;
   gap: 8px;
-  min-height: 160px;
+  min-height: 100px;
   border: 2px dashed var(--border);
   border-radius: var(--radius-lg);
   background: transparent;
