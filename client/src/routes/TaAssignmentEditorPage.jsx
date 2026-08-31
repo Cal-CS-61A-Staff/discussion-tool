@@ -8,50 +8,68 @@ import * as adminApi from '../api/admin.js';
 
 const NEW_SLIDE_ID = 'new';
 
-// 'coding' keeps the historic code-editor + autograder flow (grading_mode
-// below). Every other value is a non-code answer/content widget — see
-// server/services/response_grading.py for each one's config schema.
+// One flat dropdown for the TA. Under the hood a question still stores two
+// columns — `problem_type` (the answer/content widget) and, for coding,
+// `grading_mode` (which autograder path runs). The four coding grading
+// modes are surfaced here as sub-options of "Coding"; every other entry is
+// a non-code widget and rides on grading_mode='discussion' as a shim so
+// the server's "no grader" guards apply unchanged. `key` is only the
+// <select> value — it's mapped to/from {problemType, gradingMode} at the
+// edges. See server/services/response_grading.py for each widget's config.
 const PROBLEM_TYPE_OPTIONS = [
-  { value: 'coding', label: 'Coding (autograded)' },
-  { value: 'multiple_choice', label: 'Multiple Choice' },
-  { value: 'fill_blank_code', label: 'Fill in the Blank (Coding)' },
-  { value: 'fill_blank_markdown', label: 'Fill in the Blank (Markdown)' },
-  { value: 'short_answer', label: 'Short Answer' },
-  { value: 'text_markdown', label: 'Text (Markdown)' },
-  { value: 'image', label: 'Image' },
-  { value: 'dropdown', label: 'Dropdown' },
-  { value: 'plain_text', label: 'Plain Text Box' },
-  { value: 'iframe', label: 'Iframe' },
+  { key: 'coding_simple', label: 'Coding — Simple (call → expected value)', problemType: 'coding', gradingMode: 'simple' },
+  { key: 'coding_doctest', label: 'Coding — Doctest (docstring >>> examples)', problemType: 'coding', gradingMode: 'doctest' },
+  { key: 'coding_pltest', label: 'Coding — Custom test code', problemType: 'coding', gradingMode: 'pltest' },
+  { key: 'discussion', label: 'Discussion (no code)', problemType: 'coding', gradingMode: 'discussion' },
+  { key: 'multiple_choice', label: 'Multiple Choice', problemType: 'multiple_choice', gradingMode: 'discussion' },
+  { key: 'fill_blank_code', label: 'Fill in the Blank (Coding)', problemType: 'fill_blank_code', gradingMode: 'discussion' },
+  { key: 'fill_blank_markdown', label: 'Fill in the Blank (Markdown)', problemType: 'fill_blank_markdown', gradingMode: 'discussion' },
+  { key: 'short_answer', label: 'Short Answer', problemType: 'short_answer', gradingMode: 'discussion' },
+  { key: 'text_markdown', label: 'Text (Markdown)', problemType: 'text_markdown', gradingMode: 'discussion' },
+  { key: 'dropdown', label: 'Dropdown', problemType: 'dropdown', gradingMode: 'discussion' },
+  { key: 'plain_text', label: 'Plain Text Box', problemType: 'plain_text', gradingMode: 'discussion' },
+  { key: 'image', label: 'Image', problemType: 'image', gradingMode: 'discussion' },
+  { key: 'iframe', label: 'Iframe', problemType: 'iframe', gradingMode: 'discussion' },
 ];
 
+// key -> the {problem_type, grading_mode} pair the form/API works in.
+const typeKeyToForm = (key) => PROBLEM_TYPE_OPTIONS.find((o) => o.key === key) || PROBLEM_TYPE_OPTIONS[0];
+// and back: derive the dropdown value from a loaded question's two fields.
+const formToTypeKey = (problemType, gradingMode) =>
+  problemType === 'coding'
+    ? gradingMode === 'discussion'
+      ? 'discussion'
+      : `coding_${gradingMode || 'simple'}`
+    : problemType;
+
+// The preview badge just needs a quick at-a-glance tag, not the full
+// dropdown-option description — the long labels above wrap and overflow
+// the pill shape there.
 const PROBLEM_TYPE_SHORT_LABELS = {
-  coding: 'Coding',
+  coding_simple: 'Simple',
+  coding_doctest: 'Doctest',
+  coding_pltest: 'Custom test',
+  discussion: 'No code',
   multiple_choice: 'Multiple choice',
   fill_blank_code: 'Fill blank (code)',
   fill_blank_markdown: 'Fill blank (md)',
   short_answer: 'Short answer',
   text_markdown: 'Text',
-  image: 'Image',
   dropdown: 'Dropdown',
   plain_text: 'Plain text',
+  image: 'Image',
   iframe: 'Iframe',
 };
 
-const GRADING_MODE_OPTIONS = [
-  { value: 'simple', label: 'Simple (call → expected value)' },
-  { value: 'doctest', label: 'Doctest (docstring >>> examples)' },
-  { value: 'pltest', label: 'Custom test code' },
-  { value: 'discussion', label: 'Discussion (no code)' },
-];
-
-// The preview badge just needs a quick at-a-glance tag, not the full
-// dropdown-option description — the long labels above wrap and overflow
-// the pill shape there.
-const GRADING_MODE_SHORT_LABELS = {
-  simple: 'Simple',
-  doctest: 'Doctest',
-  pltest: 'Custom test',
-  discussion: 'No code',
+// Shown under the dropdown for the coding grading modes.
+const GRADING_MODE_HINTS = {
+  simple: 'Grades a list of call → expected-value pairs — test code is generated for you.',
+  doctest:
+    "Grades the >>> examples already in the student's own docstrings — no separate test code needed.",
+  pltest:
+    'Grades hand-written test code (a PLTestCase class) for cases the call/expected shape can’t express.',
+  discussion:
+    'No code editor or autograder — just a prompt (embed any code as a markdown code block) and an optional written-up solution.',
 };
 
 const blankForm = {
@@ -371,51 +389,41 @@ export default function TaAssignmentEditorPage() {
                     <select
                       id="qProblemType"
                       className="form-control"
-                      value={form.problemType}
+                      value={formToTypeKey(form.problemType, form.gradingMode)}
                       onChange={(e) =>
                         setForm((f) => {
-                          const next = e.target.value;
-                          const makeDefault = PROBLEM_TYPE_DEFAULT_CONTENT[next];
-                          return { ...f, problemType: next, content: makeDefault ? makeDefault() : {} };
+                          const opt = typeKeyToForm(e.target.value);
+                          const makeDefault = PROBLEM_TYPE_DEFAULT_CONTENT[opt.problemType];
+                          const keepContent = opt.problemType === f.problemType;
+                          return {
+                            ...f,
+                            problemType: opt.problemType,
+                            gradingMode: opt.gradingMode,
+                            content:
+                              opt.problemType === 'coding'
+                                ? {}
+                                : keepContent
+                                  ? f.content
+                                  : makeDefault
+                                    ? makeDefault()
+                                    : {},
+                          };
                         })
                       }
                       style={{ maxWidth: 320 }}
                     >
                       {PROBLEM_TYPE_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>
+                        <option key={o.key} value={o.key}>
                           {o.label}
                         </option>
                       ))}
                     </select>
-                  </div>
-                  {isCoding && (
-                    <div className="form-group">
-                      <label htmlFor="qGradingMode">Question type</label>
-                      <select
-                        id="qGradingMode"
-                        className="form-control"
-                        value={form.gradingMode}
-                        onChange={(e) => setForm((f) => ({ ...f, gradingMode: e.target.value }))}
-                        style={{ maxWidth: 320 }}
-                      >
-                        {GRADING_MODE_OPTIONS.map((o) => (
-                          <option key={o.value} value={o.value}>
-                            {o.label}
-                          </option>
-                        ))}
-                      </select>
+                    {isCoding && (
                       <p style={{ fontSize: 12, color: 'var(--muted)', margin: '6px 0 0' }}>
-                        {form.gradingMode === 'simple' &&
-                          'Grades a list of call → expected-value pairs — test code is generated for you.'}
-                        {form.gradingMode === 'doctest' &&
-                          "Grades the >>> examples already in the student's own docstrings — no separate test code needed."}
-                        {form.gradingMode === 'pltest' &&
-                          'Grades hand-written test code (a PLTestCase class) for cases the call/expected shape can’t express.'}
-                        {form.gradingMode === 'discussion' &&
-                          'No code editor or autograder — just a prompt (embed any code as a markdown code block) and an optional written-up solution.'}
+                        {GRADING_MODE_HINTS[form.gradingMode]}
                       </p>
-                    </div>
-                  )}
+                    )}
+                  </div>
                   <div className="form-group" style={{ marginBottom: isCoding ? 0 : 16 }}>
                     <label htmlFor="qPrompt">Problem description (markdown)</label>
                     <textarea
@@ -599,9 +607,8 @@ export default function TaAssignmentEditorPage() {
                 <div className="q-label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span>{form.title || 'Untitled question'}</span>
                   <span className="badge badge-default">
-                    {isCoding
-                      ? GRADING_MODE_SHORT_LABELS[form.gradingMode] || form.gradingMode
-                      : PROBLEM_TYPE_SHORT_LABELS[form.problemType] || form.problemType}
+                    {PROBLEM_TYPE_SHORT_LABELS[formToTypeKey(form.problemType, form.gradingMode)] ||
+                      form.problemType}
                   </span>
                 </div>
                 <MarkdownContent content={form.prompt || '_Nothing written yet._'} />
