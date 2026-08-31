@@ -659,37 +659,45 @@ def _validate_reference_solution(grading_mode, setup_code, test_code, reference_
     return None
 
 
-def _validate_prediction_suite(prediction_json):
-    """Runs an output-mode prediction's >>> examples through the real
-    sandbox (as a doctest) so a typo'd expected output is caught at
-    authoring time, not by a student. Returns None on success or
-    (response, status).
+def _resolve_prediction_items(fields):
+    """For an output-mode prediction: run each authored call (e.g.
+    `fizzbuzz(5)`) against the question's own code — its reference solution
+    + setup code, plus any extra setup on the prediction itself — in the
+    real sandbox, and capture the output as the verified `expected`.
+    Mutates fields["prediction_json"] with the resolved `items`. Returns
+    None on success or (response, status) if a call errors.
     """
     try:
-        content = json.loads(prediction_json) if prediction_json else {}
+        pred = json.loads(fields["prediction_json"]) if fields["prediction_json"] else {}
     except ValueError:
-        content = {}
-    setup = content.get("setup") or ""
-    doctest_text = content.get("doctest") or ""
-
-    # Wrap the block in a function docstring — the doctest harness runs the
-    # >>> examples found in the submitted source's docstrings.
-    indented = "\n".join("    " + line for line in doctest_text.splitlines())
-    src = f'def _prediction_suite():\n    """\n{indented}\n    """\n'
-
-    error = _validate_reference_solution("doctest", setup, "", src)
-    if error is None:
+        pred = {}
+    if pred.get("mode") != "output":
         return None
-    body, status = error
-    payload = body.get_json() or {}
-    message = payload.get("error", "a prediction example didn't produce its stated output")
-    return (
-        jsonify(
-            error=f"Prediction suite check failed: {message}",
-            failing_cases=payload.get("failing_cases"),
-        ),
-        status,
+
+    context = "\n\n".join(
+        part
+        for part in (fields.get("setup_code") or "", fields.get("reference_solution") or "", pred.get("setup") or "")
+        if part and part.strip()
     )
+
+    class _Target:
+        setup_code = ""
+        test_code = ""
+        grading_mode = "doctest"
+
+    items = []
+    for call in pred.get("calls") or []:
+        result = grading_service.run_grader(_Target(), context, predict_call=call)
+        if result.get("error"):
+            return jsonify(error=f"Couldn't run “{call}”: {result['error']}"), 400
+        pr = result.get("predict_result") or {}
+        if pr.get("kind") == "error":
+            return jsonify(error=f"“{call}” raised an error when run against the question's code."), 400
+        items.append({"code": call, "expected": pr.get("repr", "") if pr.get("kind") == "value" else ""})
+
+    pred["items"] = items
+    fields["prediction_json"] = json.dumps(pred)
+    return None
 
 
 def _question_fields_from_request(data):
@@ -832,8 +840,8 @@ def create_question(worksheet_id):
         )
         if error:
             return error
-    if fields["prediction_json"] and json.loads(fields["prediction_json"]).get("mode") == "output":
-        error = _validate_prediction_suite(fields["prediction_json"])
+    if fields["prediction_json"]:
+        error = _resolve_prediction_items(fields)
         if error:
             return error
 
@@ -891,8 +899,8 @@ def update_question(question_id):
         )
         if error:
             return error
-    if fields["prediction_json"] and json.loads(fields["prediction_json"]).get("mode") == "output":
-        error = _validate_prediction_suite(fields["prediction_json"])
+    if fields["prediction_json"]:
+        error = _resolve_prediction_items(fields)
         if error:
             return error
 

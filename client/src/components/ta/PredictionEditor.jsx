@@ -1,17 +1,26 @@
 /** The optional "prediction prompt" panel — available on every problem
  * type. `prediction` is null (no prompt) or
- *   { mode: 'output', setup, doctest }  |  { mode: 'written', prompt }
- * When set it gates advancing. See server/services/response_grading.py:
- * validate_prediction.
+ *   { mode: 'output', setup, calls }  |  { mode: 'written', prompt }
+ * For 'output', `calls` is one call expression per line (e.g. fizzbuzz(5));
+ * each is run against the question's own code at save time and the output
+ * captured as the expected answer. When set, the prediction gates
+ * advancing. See server/services/response_grading.py:validate_prediction
+ * and server/blueprints/admin.py:_resolve_prediction_items.
  */
 export default function PredictionEditor({ prediction, onChange }) {
   const enabled = prediction != null;
   const mode = prediction?.mode || 'output';
+  const callsText = Array.isArray(prediction?.calls)
+    ? prediction.calls.join('\n')
+    : prediction?.calls || '';
+  const callCount = callsText.split('\n').filter((l) => l.trim()).length;
 
   const setMode = (next) =>
-    onChange(next === 'written' ? { mode: 'written', prompt: prediction?.prompt || '' } : { mode: 'output', setup: prediction?.setup || '', doctest: prediction?.doctest || '' });
-
-  const itemCount = (String(prediction?.doctest || '').match(/^\s*>>>/gm) || []).length;
+    onChange(
+      next === 'written'
+        ? { mode: 'written', prompt: prediction?.prompt || '' }
+        : { mode: 'output', setup: prediction?.setup || '', calls: callsText }
+    );
 
   return (
     <div className="panel">
@@ -24,7 +33,7 @@ export default function PredictionEditor({ prediction, onChange }) {
           <input
             type="checkbox"
             checked={enabled}
-            onChange={(e) => onChange(e.target.checked ? { mode: 'output', setup: '', doctest: '' } : null)}
+            onChange={(e) => onChange(e.target.checked ? { mode: 'output', setup: '', calls: '' } : null)}
           />
           Ask the group to make a prediction before they can move on
         </label>
@@ -34,7 +43,7 @@ export default function PredictionEditor({ prediction, onChange }) {
             <div className="form-group" style={{ display: 'flex', gap: 16 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
                 <input type="radio" checked={mode === 'output'} onChange={() => setMode('output')} />
-                Predict the output of a snippet
+                Predict the output of a call
               </label>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
                 <input type="radio" checked={mode === 'written'} onChange={() => setMode('written')} />
@@ -57,9 +66,28 @@ export default function PredictionEditor({ prediction, onChange }) {
             ) : (
               <>
                 <div className="form-group">
-                  <label htmlFor="pred-setup">Setup code (optional)</label>
+                  <label htmlFor="pred-calls">Calls to predict — one per line</label>
                   <p style={{ fontSize: 12, color: 'var(--muted)', margin: '2px 0 6px' }}>
-                    Runs before every snippet. Hidden from students.
+                    Each is run against this question's code (its reference solution + setup) when you save, and the
+                    output becomes the answer. Students see one at random and predict what it displays.
+                  </p>
+                  <textarea
+                    id="pred-calls"
+                    className="form-control code"
+                    rows={4}
+                    value={callsText}
+                    onChange={(e) => onChange({ ...prediction, calls: e.target.value })}
+                    placeholder={'fizzbuzz(5)\nfizzbuzz(15)'}
+                  />
+                  <p style={{ fontSize: 12, color: 'var(--muted)', margin: '6px 0 0' }}>
+                    {callCount} call{callCount === 1 ? '' : 's'}.
+                  </p>
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label htmlFor="pred-setup">Extra setup code (optional)</label>
+                  <p style={{ fontSize: 12, color: 'var(--muted)', margin: '2px 0 6px' }}>
+                    Only needed if the calls rely on something not in the question's code (helper defs, a fixture, an
+                    import). Runs first; hidden from students.
                   </p>
                   <textarea
                     id="pred-setup"
@@ -68,25 +96,6 @@ export default function PredictionEditor({ prediction, onChange }) {
                     value={prediction.setup || ''}
                     onChange={(e) => onChange({ ...prediction, setup: e.target.value })}
                   />
-                </div>
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label htmlFor="pred-doctest">Prediction items</label>
-                  <p style={{ fontSize: 12, color: 'var(--muted)', margin: '2px 0 6px' }}>
-                    One <code className="code">&gt;&gt;&gt;</code> example per item with its expected output below —
-                    like a doctest. Students see one at random and predict its output; the expected values are
-                    verified against the sandbox when you save.
-                  </p>
-                  <textarea
-                    id="pred-doctest"
-                    className="form-control code"
-                    rows={7}
-                    value={prediction.doctest || ''}
-                    onChange={(e) => onChange({ ...prediction, doctest: e.target.value })}
-                    placeholder={'>>> race(5, 7)\n7\n>>> race(2, 4)\n10'}
-                  />
-                  <p style={{ fontSize: 12, color: 'var(--muted)', margin: '6px 0 0' }}>
-                    {itemCount} prediction item{itemCount === 1 ? '' : 's'} detected.
-                  </p>
                 </div>
               </>
             )}

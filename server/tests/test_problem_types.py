@@ -225,15 +225,18 @@ def test_worksheet_grades_count_a_correct_multiple_choice(app, client):
 
 # --- the optional prediction prompt (any problem_type) -------------------
 
-DOCTEST_BLOCK = ">>> 1 + 1\n2\n>>> sorted([3, 1, 2])\n[1, 2, 3]\n"
+# The sandbox-resolved shape (server/blueprints/admin.py:_resolve_prediction_items
+# does this at save time from a list of `calls`; tests build it directly
+# since the grader Docker image isn't available here).
+OUTPUT_PRED = {
+    "mode": "output",
+    "setup": "",
+    "calls": ["1 + 1", "sorted([3, 1, 2])"],
+    "items": [{"code": "1 + 1", "expected": "2"}, {"code": "sorted([3, 1, 2])", "expected": "[1, 2, 3]"}],
+}
 
 
 def _make_question(worksheet_id, prediction=None):
-    pred_json = None
-    if prediction:
-        clean, err = response_grading.validate_prediction(prediction)
-        assert err is None, err
-        pred_json = json.dumps(clean)
     q = Question(
         worksheet_id=worksheet_id,
         order_index=0,
@@ -241,27 +244,21 @@ def _make_question(worksheet_id, prediction=None):
         prompt="a conceptual prompt",
         problem_type="coding",
         grading_mode="discussion",
-        prediction_json=pred_json,
+        prediction_json=json.dumps(prediction) if prediction else None,
     )
     db.session.add(q)
     db.session.commit()
     return q
 
 
-def test_parse_prediction_items_splits_a_doctest_block():
-    items, err = response_grading.parse_prediction_items(DOCTEST_BLOCK)
-    assert err is None
-    assert items == [
-        {"code": "1 + 1", "expected": "2"},
-        {"code": "sorted([3, 1, 2])", "expected": "[1, 2, 3]"},
-    ]
-    _, err2 = response_grading.parse_prediction_items("no examples here")
-    assert err2 is not None
-
-
 def test_validate_prediction_modes():
-    clean, err = response_grading.validate_prediction({"mode": "output", "doctest": DOCTEST_BLOCK})
-    assert err is None and len(clean["items"]) == 2
+    clean, err = response_grading.validate_prediction({"mode": "output", "calls": ["fizzbuzz(5)", "fizzbuzz(15)"]})
+    assert err is None and clean["calls"] == ["fizzbuzz(5)", "fizzbuzz(15)"] and clean["items"] == []
+    # calls can also arrive as a newline string from the editor textarea.
+    clean, err = response_grading.validate_prediction({"mode": "output", "calls": "fizzbuzz(5)\n\nfizzbuzz(15)\n"})
+    assert err is None and clean["calls"] == ["fizzbuzz(5)", "fizzbuzz(15)"]
+    _, err = response_grading.validate_prediction({"mode": "output", "calls": []})
+    assert err is not None
     clean, err = response_grading.validate_prediction({"mode": "written", "prompt": "why?"})
     assert err is None and clean == {"mode": "written", "prompt": "why?"}
     _, err = response_grading.validate_prediction({"mode": "written", "prompt": ""})
@@ -271,7 +268,7 @@ def test_validate_prediction_modes():
 
 def test_output_prediction_state_hides_the_answer(app, client):
     s = _setup()
-    q = _make_question(s["worksheet"].id, {"mode": "output", "doctest": DOCTEST_BLOCK})
+    q = _make_question(s["worksheet"].id, OUTPUT_PRED)
 
     login_as(client, s["student"])
     resp = client.get(f"/api/groups/{s['group'].id}/state?worksheet_id={s['worksheet'].id}")
@@ -284,7 +281,7 @@ def test_output_prediction_state_hides_the_answer(app, client):
 
 def test_output_prediction_gates_advancing(app, client):
     s = _setup()
-    q = _make_question(s["worksheet"].id, {"mode": "output", "doctest": DOCTEST_BLOCK})
+    q = _make_question(s["worksheet"].id, OUTPUT_PRED)
     gid, wid = s["group"].id, s["worksheet"].id
     from server.services import serializers
 

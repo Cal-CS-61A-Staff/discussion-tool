@@ -23,8 +23,15 @@ question types (Question.problem_type != 'coding').
                           (server/blueprints/groups.py) -- correct if the
                           outputs differ or the buggy code times out.
 
-The optional prediction prompt (Question.prediction_json, ANY problem_type)
-is validated by `validate_prediction` here but stored on its own column.
+The optional prediction prompt (Question.prediction_json, ANY problem_type):
+  output   {"mode": "output", "setup": str, "calls": [str],
+            "items": [{"code", "expected"}]}
+           -- `calls` are call expressions (e.g. fizzbuzz(5)); each is run
+              against the question's own code at save time
+              (server/blueprints/admin.py:_resolve_prediction_items) and
+              the output stored as `expected`. One item is drawn per group.
+  written  {"mode": "written", "prompt": str}
+`validate_prediction` here cleans it; `items` is filled in at save time.
 
 The student's stored `response_json` shape by type:
   choice types        list[int]   selected option indices
@@ -34,7 +41,6 @@ The student's stored `response_json` shape by type:
   counterexample      {param_name: str, ...}   one literal per input
 """
 
-import doctest
 import json
 import re
 
@@ -52,7 +58,15 @@ BLANK_MARKER = re.compile(r"\[\[(\d+)\]\]")
 
 def validate_prediction(pred):
     """The optional prediction prompt, on any problem_type. Returns
-    (clean_dict, None) or (None, error). NULL/empty -> (None, None)."""
+    (clean_dict, None) or (None, error). NULL/empty -> (None, None).
+
+    'output' mode is just a list of call expressions (one per line), e.g.
+    `fizzbuzz(5)`. Each is run against the question's own code (its
+    reference solution + setup, plus any extra `setup` here) by
+    server/blueprints/admin.py at save time, and the captured output is
+    stored as the verified `expected` in `items`. `items` is filled in
+    there, not here.
+    """
     if not pred or not isinstance(pred, dict):
         return None, None
     mode = pred.get("mode") or "output"
@@ -63,39 +77,14 @@ def validate_prediction(pred):
         if not prompt:
             return None, "a written prediction needs a prompt"
         return {"mode": "written", "prompt": prompt}, None
-    items, err = parse_prediction_items(pred.get("doctest") or "")
-    if err:
-        return None, err
-    return {
-        "mode": "output",
-        "setup": pred.get("setup") or "",
-        "doctest": pred.get("doctest") or "",
-        "items": items,
-    }, None
 
-
-def parse_prediction_items(doctest_text):
-    """A block of >>> examples -> [{"code", "expected"}]. Mirrors
-    server/services/predict_examples.py:_examples_from_docstrings — a run
-    of >>> lines shares one REPL session, so each emitted item carries
-    every preceding source line (setup assignments etc.) plus the line
-    whose output is shown. Returns (items, error_message_or_None).
-    """
-    try:
-        examples = doctest.DocTestParser().get_examples(doctest_text or "")
-    except ValueError as exc:
-        return None, f"couldn't parse the >>> examples: {exc}"
-
-    items = []
-    accumulated = []
-    for ex in examples:
-        accumulated.append(ex.source.rstrip("\n"))
-        if ex.want.strip():
-            items.append({"code": "\n".join(accumulated), "expected": ex.want.rstrip("\n")})
-            accumulated = []  # each item is independent — don't carry lines forward
-    if not items:
-        return None, "add at least one >>> example with its expected output on the next line"
-    return items, None
+    calls = [ln.strip() for ln in (pred.get("calls") or "").splitlines()] if isinstance(pred.get("calls"), str) else [
+        str(c).strip() for c in (pred.get("calls") or [])
+    ]
+    calls = [c for c in calls if c]
+    if not calls:
+        return None, "add at least one call to predict, e.g. fizzbuzz(5)"
+    return {"mode": "output", "setup": pred.get("setup") or "", "calls": calls, "items": []}, None
 
 
 def parse_content(question):
