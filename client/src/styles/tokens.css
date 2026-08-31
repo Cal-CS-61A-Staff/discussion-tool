@@ -330,18 +330,21 @@ a:hover {
   flex-direction: column;
 }
 .course-card-heading {
+  flex: 1;
   padding: 16px 14px;
-  background: var(--brand);
-  color: #fff;
+  background: #f7f8f9;
 }
 .course-card-heading h4 {
   margin: 0;
   font-size: 16px;
+  color: var(--ink);
 }
-.course-card .panel-body {
-  flex: 1;
-  display: flex;
-  align-items: center;
+.course-card-footer {
+  padding: 10px 14px;
+  background: var(--ink);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
 }
 .course-card-create {
   display: flex;
