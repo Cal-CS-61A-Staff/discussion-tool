@@ -15,17 +15,17 @@ from server.blueprints.sections import _serialize_class, _serialize_section
 from server.extensions import db
 from server.models.attempt import Attempt
 from server.models.group import Group, GroupAssignmentProgress, GroupMembership, GroupQuestionState
-from server.models.klass import Class
+from server.models.klass import Class, ClassEnrollment
 from server.models.question_response import QuestionResponse
 from server.models.rating import Rating
-from server.models.section import Section, SectionCoTeacher, SectionEnrollment
+from server.models.section import Section, SectionCoTeacher
 from server.models.test_run import TestRun
 from server.models.user import User
 from server.models.worksheet import Question, Worksheet
 from server.services import advance as advance_service
 from server.services import grading as grading_service
 from server.services import response_grading
-from server.services.roster_import import find_user_by_email, import_enrollment_roster, import_ta_roster
+from server.services.roster_import import add_ta_by_email, find_user_by_email, import_student_roster, import_ta_roster
 from server.services.test_case_grading import generate_simple_test_code
 
 admin_bp = Blueprint("admin", __name__)
@@ -48,6 +48,22 @@ def list_tas():
     return jsonify(
         tas=[{"id": t.id, "display_name": t.display_name, "email": t.email, "role": t.role} for t in tas]
     )
+
+
+@admin_bp.post("/tas")
+@admin_required
+def add_ta():
+    """Admin-only — create (or promote) a TA account from just an email
+    (+ optional name), so they can be assigned to a section before they've
+    ever signed in. See server/services/roster_import.py:add_ta_by_email.
+    """
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    name = (data.get("name") or "").strip()
+    if not email or "@" not in email:
+        return jsonify(error="a valid email is required"), 400
+    ta = add_ta_by_email(email, name or None)
+    return jsonify(ta={"id": ta.id, "display_name": ta.display_name, "email": ta.email, "role": ta.role}), 201
 
 
 @admin_bp.put("/sections/<int:section_id>/ta")
@@ -131,11 +147,10 @@ def delete_class(class_id):
     section_ids = [s.id for s in Section.query.filter_by(class_id=klass.id).with_entities(Section.id).all()]
     if section_ids:
         _delete_groups_cascade(section_ids)
-        SectionEnrollment.query.filter(SectionEnrollment.section_id.in_(section_ids)).delete(
-            synchronize_session=False
-        )
         SectionCoTeacher.query.filter(SectionCoTeacher.section_id.in_(section_ids)).delete(synchronize_session=False)
         Section.query.filter(Section.id.in_(section_ids)).delete(synchronize_session=False)
+
+    ClassEnrollment.query.filter_by(class_id=klass.id).delete(synchronize_session=False)
 
     worksheet_ids = [w.id for w in Worksheet.query.filter_by(class_id=klass.id).with_entities(Worksheet.id).all()]
     _delete_worksheets_cascade(worksheet_ids)
@@ -215,15 +230,14 @@ def _delete_worksheets_cascade(worksheet_ids):
 @admin_required
 def delete_section(section_id):
     """Admin-only — wipes this section's groups/progress/history and its
-    enrollment/co-teacher records. Assignments aren't touched: they belong
-    to the class now (server/models/klass.py), not this section, so
-    deleting a section never removes any assignment content — only
-    deleting the whole class does (see delete_class above).
+    co-teacher records. The course roster (ClassEnrollment) and assignments
+    belong to the class now (server/models/klass.py), not this section, so
+    deleting a section never removes those — only deleting the whole class
+    does (see delete_class above).
     """
     section = Section.query.get_or_404(section_id)
 
     _delete_groups_cascade([section.id])
-    SectionEnrollment.query.filter_by(section_id=section.id).delete(synchronize_session=False)
     SectionCoTeacher.query.filter_by(section_id=section.id).delete(synchronize_session=False)
 
     db.session.delete(section)
@@ -320,11 +334,10 @@ def _serialize_co_teacher(co_teacher):
 @admin_bp.post("/roster/import")
 @admin_required
 def import_roster():
-    """Admin-only — pastes/uploads the staff-assignment sheet (TA name, then
-    repeating (Section, Groups) column pairs; tab-separated, e.g. pasted
-    straight from Google Sheets) and upserts TAs + their section assignments.
-    See server/services/roster_import.py for exactly what is and isn't
-    imported (the "Groups" columns are read but not used).
+    """Admin-only — uploads the TA roster CSV: columns `Name, Email,
+    Sections` (Sections is one cell, ';'-separated list of section labels).
+    Upserts a TA per row (matched by email) and find-or-creates + assigns
+    each listed section. See server/services/roster_import.py.
     """
     data = request.get_json(silent=True) or {}
     text = data.get("csv") or ""
@@ -334,21 +347,24 @@ def import_roster():
     return jsonify(summary=summary)
 
 
-@admin_bp.post("/roster/import-enrollment")
+@admin_bp.post("/roster/import-students")
 @admin_required
-def import_enrollment():
-    """Admin-only — pastes/uploads the per-student enrollment export (one
-    row per student per section-meeting: Student Email, Staff Email,
-    Location, Day, Start, Type; tab-separated). Only Type == "Discussion"
-    rows are used. See server/services/roster_import.py for exactly what's
-    imported: sections + their TA (by email) + each student's enrollment
-    (which section, not which group).
+def import_students():
+    """Admin-only — uploads the student roster CSV for one class: columns
+    `Email, Name` (Name optional). Each email becomes a ClassEnrollment row;
+    a placeholder student account is created for any named email with no
+    account yet. See server/services/roster_import.py.
     """
     data = request.get_json(silent=True) or {}
     text = data.get("csv") or ""
+    class_id = data.get("class_id")
     if not text.strip():
         return jsonify(error="csv is required"), 400
-    summary = import_enrollment_roster(text)
+    if not class_id:
+        return jsonify(error="class_id is required"), 400
+    if Class.query.get(class_id) is None:
+        return jsonify(error="class not found"), 404
+    summary = import_student_roster(text, class_id)
     return jsonify(summary=summary)
 
 

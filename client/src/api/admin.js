@@ -18,9 +18,11 @@ export const reorderQuestions = (worksheetId, order) =>
 export const getGrades = (worksheetId) => api.get(`/worksheets/${worksheetId}/grades`);
 
 export const listTas = () => api.get('/tas');
+export const addTa = (email, name) => api.post('/tas', { email, ...(name ? { name } : {}) });
 export const assignSectionTa = (sectionId, taUserId) => api.put(`/sections/${sectionId}/ta`, { ta_user_id: taUserId });
 export const importRoster = (csv) => api.post('/roster/import', { csv });
-export const importEnrollmentRoster = (csv) => api.post('/roster/import-enrollment', { csv });
+export const importStudentRoster = (csv, classId) =>
+  api.post('/roster/import-students', { csv, class_id: classId });
 
 export const createClass = (courseName) => api.post('/classes', { course_name: courseName });
 export const deleteClass = (classId) => api.delete(`/classes/${classId}`);

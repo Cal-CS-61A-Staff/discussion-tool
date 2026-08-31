@@ -7,8 +7,16 @@ export const sectionWorksheets = (sectionId) => api.get(`/sections/${sectionId}/
 export const classWorksheets = (classId) => api.get(`/classes/${classId}/worksheets`);
 export const sectionGroups = (sectionId) => api.get(`/sections/${sectionId}/groups`); // TA-only
 export const sectionProgress = (sectionId) => api.get(`/sections/${sectionId}/progress`); // TA-only
+export const joinableGroups = (sectionId) => api.get(`/sections/${sectionId}/groups/joinable`);
 export const joinGroupByNumber = (sectionId, number) => api.post(`/sections/${sectionId}/groups/join`, { number });
 export const workIndividually = (sectionId) => api.post(`/sections/${sectionId}/work-individually`);
+
+// Class-level student roster (server/blueprints/sections.py) — any TA/co-teacher on the class, or an admin.
+export const listClassStudents = (classId) => api.get(`/classes/${classId}/students`);
+export const addClassStudent = (classId, email, name) =>
+  api.post(`/classes/${classId}/students`, { email, ...(name ? { name } : {}) });
+export const removeClassStudent = (classId, email) =>
+  api.delete(`/classes/${classId}/students`, { email });
 
 // TA-only group management (server/blueprints/admin.py)
 export const createGroups = (sectionId, count) => api.post(`/sections/${sectionId}/groups`, { count });

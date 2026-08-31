@@ -31,24 +31,6 @@ class Section(db.Model):
     ta = db.relationship("User", foreign_keys=[ta_user_id])
 
 
-class SectionEnrollment(db.Model):
-    """One row per (section, student email) — imported from the real
-    enrollment roster (server/services/roster_import.py:import_enrollment_roster),
-    independent of whether that student has ever logged in yet. Gates which
-    section's groups a student may join (server/blueprints/sections.py) —
-    it does not say which specific group within the section they end up in,
-    only that they're allowed into some group there at all.
-    """
-
-    __tablename__ = "section_enrollments"
-    __table_args__ = (db.UniqueConstraint("section_id", "student_email"),)
-
-    id = db.Column(db.Integer, primary_key=True)
-    section_id = db.Column(db.Integer, db.ForeignKey("sections.id"), nullable=False)
-    student_email = db.Column(db.String(120), nullable=False, index=True)
-    created_at = db.Column(db.DateTime, default=utcnow)
-
-
 class SectionCoTeacher(db.Model):
     """A TA sharing authority over a section they aren't the primary owner
     of — granted by anyone who already has authority over the section (the

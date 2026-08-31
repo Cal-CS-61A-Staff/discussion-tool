@@ -1,30 +1,23 @@
-"""Imports course rosters. Two shapes, from two different real sheets:
+"""Course roster imports and lookups.
 
-`import_ta_roster` — the staff-assignment sheet (TA name, then up to N
-repeating (Section, Groups) column pairs). TAs have no email in this sheet,
-so matching is by (case-insensitive, trimmed) display_name.
+Two CSV shapes, both uploaded from the Admin page (comma-separated, e.g.
+Google Sheets' File -> Download -> Comma Separated Values), delimiter
+auto-detected so a tab-separated paste still works:
 
-`import_enrollment_roster` — the fuller per-student enrollment export (one
-row per student per section-meeting: Student Email, Staff Email, Location,
-Day, Start, Type). This one has real emails for both students and staff, so
-matching is by email instead — the more robust, forward-compatible identity
-key once real Google/Canvas OAuth replaces the login stub (see
-server/blueprints/auth.py:login, which already prefers an email match over
-creating a new user when a login provides one).
+`import_ta_roster` — staff sheet: columns `Name, Email, Sections`, where
+Sections is a single cell holding a `;`- (or newline-) separated list of
+section labels the TA teaches. Matched by email (falling back to name);
+each section label is find-or-created under the course and assigned to
+that TA.
 
-Both are uploaded as a CSV file from the Admin page (comma-separated, e.g.
-Google Sheets' File → Download → Comma Separated Values export) — the
-delimiter is auto-detected (see _detect_delimiter) so a legacy
-tab-separated paste still works too. Both are idempotent — re-importing an
-updated sheet reuses what already matches rather than duplicating it.
+`import_student_roster` — course roster: columns `Email, Name` (Name
+optional). Each email becomes a ClassEnrollment row for the given class;
+if a name is present and no account matches that email yet, a placeholder
+student User is created so their name shows before they ever log in.
 
-Neither turns "which groups" data into actual Group rows: the staff sheet's
-"Groups" columns (e.g. "188-193") number groups on a scheme spanning the
-whole course, which doesn't correspond to this app's per-section-local
-Group.number (1, 2, 3... within each section); assigning actual groups
-stays the existing manual step (the "+ Add groups" page). The enrollment
-sheet only ever says which *section* a student belongs to
-(SectionEnrollment) — not which group within it.
+Both are idempotent. Neither creates Group rows — assigning students to
+groups is done by the students themselves on the join page, and adding
+groups stays the manual "+ Add groups" step.
 """
 
 import csv
@@ -33,20 +26,17 @@ import io
 from sqlalchemy import func
 
 from server.extensions import db
-from server.models.klass import Class
-from server.models.section import Section, SectionEnrollment
+from server.models.klass import Class, ClassEnrollment
+from server.models.section import Section
 from server.models.user import User
 
 DEFAULT_COURSE_NAME = "CS 61A"
 
 
 def _detect_delimiter(text):
-    """Both imports used to only ever see text pasted straight out of
-    Google Sheets (tab-separated). Now that the Admin page uploads an
-    actual .csv file instead, the real-world delimiter is comma — but
-    detect rather than hard-code it so a tab-separated paste still works
-    too (anyone scripting against this endpoint directly, e.g.), rather
-    than silently mis-parsing into one giant first column.
+    """Real-world input is a downloaded .csv (comma), but detect rather
+    than hard-code so a tab-separated paste from Google Sheets still parses
+    instead of collapsing into one giant column.
     """
     sample = text.splitlines()[0] if text.splitlines() else text
     try:
@@ -64,53 +54,89 @@ def _find_or_create_class(course_name):
     return klass
 
 
-def parse_ta_roster(text):
-    """Returns [{"name": str, "sections": [str, ...]}, ...] — one entry per
-    non-blank row, `sections` holding only the non-empty, non-"N/A" Section
-    cells (the "Groups" cell of each pair is read but discarded, and the
-    header row is skipped by assuming row 0 is always the header).
-    """
-    rows = list(csv.reader(io.StringIO(text), delimiter=_detect_delimiter(text)))
-    if not rows:
-        return []
-
-    entries = []
-    for row in rows[1:]:
-        if not row or not row[0].strip():
-            continue
-        name = row[0].strip()
-        sections = []
-        for i in range(1, len(row), 2):
-            label = row[i].strip()
-            if label and label.upper() != "N/A":
-                sections.append(label)
-        entries.append({"name": name, "sections": sections})
-    return entries
+def find_user_by_email(email):
+    return User.query.filter(func.lower(User.email) == email.strip().lower()).first()
 
 
 def find_ta_by_name(name):
     return User.query.filter(User.role == "ta", func.lower(User.display_name) == name.strip().lower()).first()
 
 
+def _placeholder_display_name(email):
+    return email.split("@")[0]
+
+
+def _rows(text):
+    return csv.DictReader(io.StringIO(text), delimiter=_detect_delimiter(text))
+
+
+def _get(row, *names):
+    """Case-insensitive column fetch — tolerates `Email`/`email`/` Email `."""
+    lowered = {(k or "").strip().lower(): (v or "") for k, v in row.items()}
+    for name in names:
+        if name.lower() in lowered:
+            return lowered[name.lower()].strip()
+    return ""
+
+
+# --------------------------------------------------------------------------
+# TA roster: Name, Email, Sections
+# --------------------------------------------------------------------------
+
+
+def _split_sections(cell):
+    parts = []
+    for chunk in cell.replace("\n", ";").split(";"):
+        label = chunk.strip()
+        if label and label.upper() != "N/A":
+            parts.append(label)
+    return parts
+
+
+def parse_ta_roster(text):
+    """Returns [{"name", "email", "sections": [...]}] — one entry per
+    non-blank row."""
+    entries = []
+    for row in _rows(text):
+        name = _get(row, "name")
+        email = _get(row, "email")
+        if not name and not email:
+            continue
+        entries.append(
+            {"name": name, "email": email, "sections": _split_sections(_get(row, "sections", "section"))}
+        )
+    return entries
+
+
 def import_ta_roster(text, course_name=DEFAULT_COURSE_NAME):
-    """Find-or-creates a TA User per row and a Section per section label,
-    then assigns Section.ta_user_id — idempotent, so re-importing an updated
-    sheet is safe (existing TAs/sections are matched and reused, not
-    duplicated).
+    """Find-or-creates a TA per row (matched by email, then name) and a
+    Section per section label, then assigns Section.ta_user_id. Idempotent.
     """
     entries = parse_ta_roster(text)
     summary = {"tas_created": 0, "tas_matched": 0, "sections_created": 0, "sections_assigned": 0}
     klass = _find_or_create_class(course_name)
 
     for entry in entries:
-        ta = find_ta_by_name(entry["name"])
+        ta = None
+        if entry["email"]:
+            ta = find_user_by_email(entry["email"])
+        if ta is None and entry["name"]:
+            ta = find_ta_by_name(entry["name"])
+
         if ta is None:
-            ta = User(display_name=entry["name"], role="ta")
+            display_name = entry["name"] or (
+                _placeholder_display_name(entry["email"]) if entry["email"] else "TA"
+            )
+            ta = User(display_name=display_name, role="ta", email=entry["email"].lower() or None)
             db.session.add(ta)
             db.session.flush()
             summary["tas_created"] += 1
         else:
             summary["tas_matched"] += 1
+            if entry["email"] and not ta.email:
+                ta.email = entry["email"].lower()
+            if entry["name"] and ta.display_name == _placeholder_display_name(ta.email or ""):
+                ta.display_name = entry["name"]
 
         for label in entry["sections"]:
             section = Section.query.filter_by(class_id=klass.id, name=label).first()
@@ -126,113 +152,61 @@ def import_ta_roster(text, course_name=DEFAULT_COURSE_NAME):
     return summary
 
 
-def find_user_by_email(email):
-    return User.query.filter(func.lower(User.email) == email.strip().lower()).first()
+def add_ta_by_email(email, name=None):
+    """Find-or-create a TA account for a single email (the Admin page's
+    "add a TA" input). A plain student/None account with that email is
+    promoted to 'ta'."""
+    email = email.strip().lower()
+    ta = find_user_by_email(email)
+    if ta is None:
+        ta = User(display_name=(name or "").strip() or _placeholder_display_name(email), role="ta", email=email)
+        db.session.add(ta)
+    else:
+        ta.role = "ta"
+        if name and name.strip():
+            ta.display_name = name.strip()
+    db.session.commit()
+    return ta
 
 
-def _placeholder_display_name(email):
-    return email.split("@")[0]
+# --------------------------------------------------------------------------
+# Student roster: Email, Name
+# --------------------------------------------------------------------------
 
 
-def enrollment_section_label(day, start, location):
-    return f"{day} {start} ({location})"
-
-
-def parse_enrollment_roster(text, discussion_type="Discussion"):
-    """Parses the real per-student enrollment export: one row per (student,
-    section-meeting), columns `Student Email`, `Staff Email`, `Location`,
-    `Day`, `Start`, `Type` (tab-separated, e.g. pasted from Google Sheets).
-    The same sheet also lists Lab/Office-Hours/Lecture rows for other
-    meeting types — only rows where Type == discussion_type are kept, since
-    this app is discussion-only.
-
-    Returns [{"student_email", "staff_email", "day", "start", "location"}].
-    A row missing its email/day/start/location is skipped rather than
-    raising — a roster export is exactly the kind of input worth tolerating
-    a few incomplete rows in, rather than failing the whole import.
-    """
-    reader = csv.DictReader(io.StringIO(text), delimiter=_detect_delimiter(text))
-    rows = []
-    for row in reader:
-        if (row.get("Type") or "").strip().lower() != discussion_type.lower():
+def parse_student_roster(text):
+    """Returns [{"email", "name"}] — one entry per row with a non-blank
+    Email."""
+    entries = []
+    for row in _rows(text):
+        email = _get(row, "email", "student email")
+        if not email:
             continue
-        student_email = (row.get("Student Email") or "").strip()
-        day = (row.get("Day") or "").strip()
-        start = (row.get("Start") or "").strip()
-        location = (row.get("Location") or "").strip()
-        if not (student_email and day and start and location):
-            continue
-        rows.append(
-            {
-                "student_email": student_email,
-                "staff_email": (row.get("Staff Email") or "").strip(),
-                "day": day,
-                "start": start,
-                "location": location,
-            }
-        )
-    return rows
+        entries.append({"email": email, "name": _get(row, "name", "student name")})
+    return entries
 
 
-def import_enrollment_roster(text, course_name=DEFAULT_COURSE_NAME):
-    """Find-or-creates a Section per unique (day, start, location), assigns
-    its TA from that group's Staff Email, and records every Student Email as
-    enrolled in it (server/models/section.py:SectionEnrollment). A
-    roster-created TA/student has no real name yet — just a placeholder
-    derived from their email — until they actually log in with a display
-    name, at which point server/blueprints/auth.py:login fills it in on
-    that same (email-matched) account rather than creating a new one.
-
-    Idempotent: re-importing an updated sheet reuses existing sections,
-    users, and enrollments rather than duplicating them, and re-resolves
-    each section's TA from whatever the sheet says now.
+def import_student_roster(text, class_id):
+    """Records every email as enrolled in `class_id` (ClassEnrollment), and
+    for any row that has a name but no matching account yet, creates a
+    placeholder student User so the name is visible before first login.
+    Idempotent.
     """
-    rows = parse_enrollment_roster(text)
-    summary = {
-        "sections_created": 0,
-        "sections_matched": 0,
-        "tas_created": 0,
-        "tas_matched": 0,
-        "enrollments_created": 0,
-        "enrollments_matched": 0,
-    }
-    klass = _find_or_create_class(course_name)
-    resolved_sections = {}
+    entries = parse_student_roster(text)
+    summary = {"enrollments_created": 0, "enrollments_matched": 0, "students_created": 0}
 
-    for row in rows:
-        key = (row["day"], row["start"], row["location"])
-        section = resolved_sections.get(key)
-        if section is None:
-            label = enrollment_section_label(*key)
-            section = Section.query.filter_by(class_id=klass.id, name=label).first()
-            if section is None:
-                section = Section(class_id=klass.id, name=label)
-                db.session.add(section)
-                db.session.flush()
-                summary["sections_created"] += 1
-            else:
-                summary["sections_matched"] += 1
-
-            if row["staff_email"]:
-                ta = find_user_by_email(row["staff_email"])
-                if ta is None:
-                    ta = User(display_name=_placeholder_display_name(row["staff_email"]), role="ta", email=row["staff_email"].lower())
-                    db.session.add(ta)
-                    db.session.flush()
-                    summary["tas_created"] += 1
-                else:
-                    summary["tas_matched"] += 1
-                section.ta_user_id = ta.id
-
-            resolved_sections[key] = section
-
-        email = row["student_email"].lower()
-        enrollment = SectionEnrollment.query.filter_by(section_id=section.id, student_email=email).first()
+    for entry in entries:
+        email = entry["email"].lower()
+        enrollment = ClassEnrollment.query.filter_by(class_id=class_id, student_email=email).first()
         if enrollment is None:
-            db.session.add(SectionEnrollment(section_id=section.id, student_email=email))
+            db.session.add(ClassEnrollment(class_id=class_id, student_email=email))
             summary["enrollments_created"] += 1
         else:
             summary["enrollments_matched"] += 1
+
+        if entry["name"] and find_user_by_email(email) is None:
+            db.session.add(User(display_name=entry["name"], role="student", email=email))
+            summary["students_created"] += 1
 
     db.session.commit()
     return summary

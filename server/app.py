@@ -139,9 +139,8 @@ def _register_import_roster_command(app):
     @app.cli.command("import-roster")
     @click.argument("path", type=click.Path(exists=True))
     def import_roster_command(path):
-        """Import a TA-roster file (tab-separated: TA name, then repeating
-        Section/Groups column pairs — see server/services/roster_import.py
-        for the exact shape and what's used vs. ignored).
+        """Import a TA-roster CSV: columns `Name, Email, Sections` (Sections
+        is one cell, ';'-separated) — see server/services/roster_import.py.
         """
         from server.services.roster_import import import_ta_roster
 

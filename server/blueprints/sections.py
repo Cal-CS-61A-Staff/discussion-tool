@@ -1,14 +1,24 @@
 from flask import Blueprint, jsonify, request
 from sqlalchemy import func
 
-from server.auth import get_current_user, login_required, role_required, ta_owns_class, ta_owns_section, require_section_access
+from server.auth import (
+    get_current_user,
+    login_required,
+    require_class_access,
+    require_section_access,
+    role_required,
+    ta_owns_class,
+    ta_owns_section,
+)
 from server.config import Config
 from server.extensions import db
 from server.models.group import Group, GroupMembership
-from server.models.klass import Class
-from server.models.section import Section, SectionCoTeacher, SectionEnrollment
+from server.models.klass import Class, ClassEnrollment
+from server.models.section import Section, SectionCoTeacher
+from server.models.user import User
 from server.models.worksheet import Worksheet
 from server.services import serializers
+from server.services.roster_import import find_user_by_email
 
 sections_bp = Blueprint("sections", __name__)
 
@@ -43,6 +53,90 @@ def list_sections():
         }
         sections = [s for s in sections if s.ta_user_id == user.id or s.id in co_taught_ids]
     return jsonify(sections=[_serialize_section(s, user) for s in sections])
+
+
+@sections_bp.get("/classes/<int:class_id>/students")
+@role_required("ta")
+def list_class_students(class_id):
+    """The course roster (ClassEnrollment) for any TA/co-teacher on the
+    class, or an admin. Each row is annotated with whether an account
+    exists for that email yet and whether they've joined a group here."""
+    klass = Class.query.get_or_404(class_id)
+    error = require_class_access(get_current_user(), klass)
+    if error:
+        return error
+
+    enrollments = (
+        ClassEnrollment.query.filter_by(class_id=class_id).order_by(ClassEnrollment.student_email).all()
+    )
+    emails = [e.student_email for e in enrollments]
+    users = (
+        {u.email.lower(): u for u in User.query.filter(func.lower(User.email).in_(emails)).all()}
+        if emails
+        else {}
+    )
+    in_group = {
+        (row[0] or "").lower()
+        for row in db.session.query(User.email)
+        .join(GroupMembership, GroupMembership.user_id == User.id)
+        .join(Group, Group.id == GroupMembership.group_id)
+        .join(Section, Section.id == Group.section_id)
+        .filter(Section.class_id == class_id, Group.is_individual.is_(False), User.email.isnot(None))
+        .all()
+    }
+    students = []
+    for e in enrollments:
+        u = users.get(e.student_email)
+        students.append(
+            {
+                "email": e.student_email,
+                "name": u.display_name if u else None,
+                "has_account": u is not None,
+                "in_group": e.student_email in in_group,
+            }
+        )
+    return jsonify(students=students)
+
+
+@sections_bp.post("/classes/<int:class_id>/students")
+@role_required("ta")
+def add_class_student(class_id):
+    """Add one student to the course roster by email (+ optional name).
+    Any TA/co-teacher on the class, or an admin."""
+    klass = Class.query.get_or_404(class_id)
+    error = require_class_access(get_current_user(), klass)
+    if error:
+        return error
+
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    name = (data.get("name") or "").strip()
+    if not email or "@" not in email:
+        return jsonify(error="a valid email is required"), 400
+
+    if ClassEnrollment.query.filter_by(class_id=class_id, student_email=email).first() is None:
+        db.session.add(ClassEnrollment(class_id=class_id, student_email=email))
+    if name and find_user_by_email(email) is None:
+        db.session.add(User(display_name=name, role="student", email=email))
+    db.session.commit()
+    return jsonify(ok=True)
+
+
+@sections_bp.delete("/classes/<int:class_id>/students")
+@role_required("ta")
+def remove_class_student(class_id):
+    """Remove a student from the course roster — does not delete their
+    account or any group work, just their roster entry."""
+    klass = Class.query.get_or_404(class_id)
+    error = require_class_access(get_current_user(), klass)
+    if error:
+        return error
+
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    ClassEnrollment.query.filter_by(class_id=class_id, student_email=email).delete()
+    db.session.commit()
+    return jsonify(ok=True)
 
 
 @sections_bp.get("/classes/<int:class_id>/worksheets")
@@ -117,17 +211,39 @@ def section_groups(section_id):
     return jsonify(groups=[_serialize_group_summary(g) for g in groups])
 
 
+@sections_bp.get("/sections/<int:section_id>/groups/joinable")
+@login_required
+def joinable_groups(section_id):
+    """The list a student picks from on the join page — every non-individual
+    group in the section with how full it is. Any signed-in user, but the
+    same course-roster gate as joining applies."""
+    section = Section.query.get_or_404(section_id)
+    user = get_current_user()
+    if user.role == "student":
+        error = _enrollment_blocks_join(user, section)
+        if error:
+            return jsonify(error=error), 403
+    groups = Group.query.filter_by(section_id=section.id, is_individual=False).order_by(Group.number).all()
+    payload = []
+    for g in groups:
+        summary = _serialize_group_summary(g)
+        summary["capacity"] = Config.MAX_GROUP_SIZE
+        summary["is_full"] = summary["member_count"] >= Config.MAX_GROUP_SIZE
+        payload.append(summary)
+    return jsonify(groups=payload)
+
+
 @sections_bp.post("/sections/<int:section_id>/groups/join")
 @login_required
 def join_group_by_number(section_id):
-    """Student types their TA-assigned group number to join it — no
-    visible group list, no join code. Idempotent if already a member.
-    """
+    """Student picks a group on the join page and its number is sent here.
+    Idempotent if already a member."""
     user = get_current_user()
     if user.role != "student":
         return jsonify(error="only students join groups"), 403
 
-    error = _enrollment_blocks_join(user, section_id)
+    section = Section.query.get_or_404(section_id)
+    error = _enrollment_blocks_join(user, section)
     if error:
         return jsonify(error=error), 403
 
@@ -172,7 +288,7 @@ def work_individually(section_id):
     user = get_current_user()
     section = Section.query.get_or_404(section_id)
     if user.role == "student":
-        error = _enrollment_blocks_join(user, section_id)
+        error = _enrollment_blocks_join(user, section)
         if error:
             return jsonify(error=error), 403
     elif not ta_owns_section(user, section):
@@ -194,26 +310,25 @@ def work_individually(section_id):
     return jsonify(group=_serialize_group_summary(group))
 
 
-def _enrollment_blocks_join(user, section_id):
-    """None if `user` may join a group in `section_id`, else an error
-    message to surface as an error banner. Only enforced when both (a) the
-    user gave an email at login (server/blueprints/auth.py) and (b) this
-    specific section actually has imported enrollment data
-    (SectionEnrollment) — a section with no imported roster stays open to
-    anyone, same as before this existed, and a user with no email is never
-    gated (there's nothing to check their email against).
+def _enrollment_blocks_join(user, section):
+    """None if `user` may join a group under `section` (course-level gate),
+    else an error message to surface as a banner. Only enforced when both
+    (a) the user gave an email at login (server/blueprints/auth.py) and
+    (b) this section's CLASS has a roster (ClassEnrollment) — a class with
+    no roster stays open to anyone, and a user with no email is never gated.
     """
     if not user.email:
         return None
-    if not db.session.query(SectionEnrollment.id).filter_by(section_id=section_id).first():
+    class_id = section.class_id
+    if not db.session.query(ClassEnrollment.id).filter_by(class_id=class_id).first():
         return None
     is_enrolled = (
-        SectionEnrollment.query.filter_by(section_id=section_id, student_email=user.email.strip().lower()).first()
+        ClassEnrollment.query.filter_by(class_id=class_id, student_email=user.email.strip().lower()).first()
         is not None
     )
     if is_enrolled:
         return None
-    return "you're not enrolled in this discussion section"
+    return "you're not on the roster for this class — ask your TA to add you"
 
 
 def _serialize_class(klass, user):

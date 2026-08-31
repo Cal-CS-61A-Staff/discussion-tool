@@ -3,15 +3,16 @@
 belong to the class now (server/models/klass.py), not any one section, so
 deleting a section must leave them untouched — only deleting the class
 itself cascades to worksheets/questions; deleting a section only cascades
-its own groups/roster/co-teachers.
+its own groups/co-teachers. The course roster (ClassEnrollment) belongs to
+the class, so it survives a section delete and dies with the class.
 """
 
 from server.extensions import db
 from server.models.attempt import Attempt
 from server.models.group import Group, GroupAssignmentProgress, GroupMembership, GroupQuestionState
-from server.models.klass import Class
+from server.models.klass import Class, ClassEnrollment
 from server.models.rating import Rating
-from server.models.section import Section, SectionCoTeacher, SectionEnrollment
+from server.models.section import Section, SectionCoTeacher
 from server.models.test_run import TestRun
 from server.models.user import User
 from server.models.worksheet import Question, Worksheet
@@ -34,7 +35,7 @@ def _make_full_class():
     db.session.flush()
 
     db.session.add(SectionCoTeacher(section_id=section.id, user_id=co_ta.id))
-    db.session.add(SectionEnrollment(section_id=section.id, student_email="student@x.com"))
+    db.session.add(ClassEnrollment(class_id=klass.id, student_email="student@x.com"))
 
     worksheet = Worksheet(class_id=klass.id, slug="w1", title="W1", is_published=True)
     db.session.add(worksheet)
@@ -120,12 +121,12 @@ def test_delete_section_cascades_its_groups_but_leaves_assignments(app, client, 
     assert Rating.query.filter_by(group_id=group_id).count() == 0
     assert Attempt.query.filter_by(group_id=group_id).count() == 0
     assert TestRun.query.filter_by(group_id=group_id).count() == 0
-    assert SectionEnrollment.query.filter_by(section_id=section_id).count() == 0
     assert SectionCoTeacher.query.filter_by(section_id=section_id).count() == 0
-    # ...but the assignment belongs to the class, not this section, so it
-    # (and its question) must survive.
+    # ...but the assignment and the course roster belong to the class, not
+    # this section, so they must survive.
     assert db.session.get(Worksheet, worksheet_id) is not None
     assert db.session.get(Question, question_id) is not None
+    assert ClassEnrollment.query.filter_by(student_email="student@x.com").count() == 1
 
 
 def test_delete_class_is_admin_only(app, client, db):
@@ -173,5 +174,5 @@ def test_delete_class_cascades_everything(app, client, db):
     assert Rating.query.filter_by(group_id=group_id).count() == 0
     assert Attempt.query.filter_by(group_id=group_id).count() == 0
     assert TestRun.query.filter_by(group_id=group_id).count() == 0
-    assert SectionEnrollment.query.filter_by(section_id=section_id).count() == 0
     assert SectionCoTeacher.query.filter_by(section_id=section_id).count() == 0
+    assert ClassEnrollment.query.filter_by(class_id=class_id).count() == 0

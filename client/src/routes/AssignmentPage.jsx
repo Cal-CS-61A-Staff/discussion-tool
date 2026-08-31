@@ -13,14 +13,21 @@ export default function AssignmentPage() {
 
   const [worksheet, setWorksheet] = useState(null);
   const [classId, setClassId] = useState(null);
+  const [classSections, setClassSections] = useState([]);
   const [myGroupInClass, setMyGroupInClass] = useState(null);
   const [questions, setQuestions] = useState([]);
-  const [groupNumber, setGroupNumber] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [joining, setJoining] = useState(false);
   const [workingIndividually, setWorkingIndividually] = useState(false);
   const [showSwitchGroup, setShowSwitchGroup] = useState(false);
+
+  // Which section's groups the student is browsing on the join panel —
+  // starts at the section in the URL but they can switch TA freely.
+  const [joinSectionId, setJoinSectionId] = useState(sectionId);
+  const [joinable, setJoinable] = useState([]);
+  const [joinableLoading, setJoinableLoading] = useState(false);
+  const [joinGroupNumber, setJoinGroupNumber] = useState('');
 
   const load = () => {
     setLoading(true);
@@ -34,11 +41,13 @@ export default function AssignmentPage() {
         const found = worksheetsRes.worksheets.find((w) => String(w.id) === String(worksheetId));
         setWorksheet(found || null);
         const section = sectionsRes.sections.find((s) => String(s.id) === String(sectionId));
-        setClassId(section ? section.class_id : null);
+        const cid = section ? section.class_id : null;
+        setClassId(cid);
+        const inClass = sectionsRes.sections.filter((s) => s.class_id === cid);
+        setClassSections(inClass);
         if (user.role === 'student') {
-          const mine = secondRes.groups.find(
-            (g) => String(g.section_id) === String(sectionId) && !g.is_individual
-          );
+          const classSectionIds = new Set(inClass.map((s) => s.id));
+          const mine = secondRes.groups.find((g) => !g.is_individual && classSectionIds.has(g.section_id));
           setMyGroupInClass(mine || null);
         } else {
           setQuestions(secondRes.questions);
@@ -53,17 +62,37 @@ export default function AssignmentPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sectionId, worksheetId]);
 
-  const goToWorksheet = (groupId) => {
-    navigate(`/classes/${sectionId}/assignments/${worksheetId}/groups/${groupId}`);
+  // Load the joinable-group list whenever the student is picking a group
+  // and the chosen section changes.
+  useEffect(() => {
+    if (user.role !== 'student' || !joinSectionId) return;
+    if (myGroupInClass && !showSwitchGroup) return;
+    let cancelled = false;
+    setJoinableLoading(true);
+    setJoinGroupNumber('');
+    sectionsApi
+      .joinableGroups(joinSectionId)
+      .then((res) => !cancelled && setJoinable(res.groups))
+      .catch((err) => !cancelled && setError(err.message))
+      .finally(() => !cancelled && setJoinableLoading(false));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [joinSectionId, myGroupInClass, showSwitchGroup, user.role]);
+
+  const goToWorksheet = (groupSectionId, groupId) => {
+    navigate(`/classes/${groupSectionId}/assignments/${worksheetId}/groups/${groupId}`);
   };
 
-  const handleJoinByNumber = async (e) => {
+  const handleJoin = async (e) => {
     e.preventDefault();
+    if (!joinGroupNumber) return;
     setJoining(true);
     setError('');
     try {
-      const res = await sectionsApi.joinGroupByNumber(sectionId, Number(groupNumber));
-      goToWorksheet(res.group.id);
+      const res = await sectionsApi.joinGroupByNumber(joinSectionId, Number(joinGroupNumber));
+      goToWorksheet(joinSectionId, res.group.id);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -75,8 +104,8 @@ export default function AssignmentPage() {
     setWorkingIndividually(true);
     setError('');
     try {
-      const res = await sectionsApi.workIndividually(sectionId);
-      goToWorksheet(res.group.id);
+      const res = await sectionsApi.workIndividually(joinSectionId || sectionId);
+      goToWorksheet(joinSectionId || sectionId, res.group.id);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -137,7 +166,7 @@ export default function AssignmentPage() {
               <div
                 className="panel panel-clickable"
                 style={{ maxWidth: 360 }}
-                onClick={() => goToWorksheet(myGroupInClass.id)}
+                onClick={() => goToWorksheet(myGroupInClass.section_id, myGroupInClass.id)}
               >
                 <div className="panel-heading">
                   <h4>{myGroupInClass.name}</h4>
@@ -156,29 +185,52 @@ export default function AssignmentPage() {
                     setShowSwitchGroup(true);
                   }}
                 >
-                  Enter a different group →
+                  Switch group →
                 </a>
               </p>
             </>
           ) : (
-            <form onSubmit={handleJoinByNumber} className="panel" style={{ maxWidth: 360 }}>
+            <form onSubmit={handleJoin} className="panel" style={{ maxWidth: 420 }}>
               <div className="panel-body">
                 <div className="form-group" style={{ marginBottom: 12 }}>
-                  <label htmlFor="groupNumber">Group number</label>
-                  <input
-                    id="groupNumber"
+                  <label htmlFor="joinSection">Your TA / section</label>
+                  <select
+                    id="joinSection"
                     className="form-control"
-                    type="number"
-                    min="1"
-                    value={groupNumber}
-                    onChange={(e) => setGroupNumber(e.target.value)}
-                    placeholder="e.g. 3"
-                    required
-                    autoFocus
-                  />
+                    value={joinSectionId}
+                    onChange={(e) => setJoinSectionId(e.target.value)}
+                  >
+                    {[...classSections]
+                      .sort((a, b) => (a.ta_name || '~').localeCompare(b.ta_name || '~'))
+                      .map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.ta_name ? `${s.ta_name} — ${s.name}` : s.name}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+                <div className="form-group" style={{ marginBottom: 12 }}>
+                  <label htmlFor="joinGroup">Group</label>
+                  <select
+                    id="joinGroup"
+                    className="form-control"
+                    value={joinGroupNumber}
+                    disabled={joinableLoading || joinable.length === 0}
+                    onChange={(e) => setJoinGroupNumber(e.target.value)}
+                  >
+                    <option value="" disabled>
+                      {joinableLoading ? 'Loading…' : joinable.length === 0 ? 'No groups yet' : 'Choose a group…'}
+                    </option>
+                    {joinable.map((g) => (
+                      <option key={g.id} value={g.number} disabled={g.is_full}>
+                        {g.name} — {g.member_count}/{g.capacity}
+                        {g.is_full ? ' (full)' : ''}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <button className="btn btn-primary" type="submit" disabled={joining}>
+                  <button className="btn btn-primary" type="submit" disabled={joining || !joinGroupNumber}>
                     {joining ? 'Joining…' : 'Join group'}
                   </button>
                   {myGroupInClass && (
@@ -191,10 +243,14 @@ export default function AssignmentPage() {
             </form>
           )}
 
-          <p style={{ margin: '16px 0 8px', fontSize: 13, color: 'var(--muted)' }}>or</p>
-          <button className="btn btn-gold" onClick={handleWorkIndividually} disabled={workingIndividually}>
-            {workingIndividually ? 'Setting up…' : 'Work individually'}
-          </button>
+          {(!myGroupInClass || showSwitchGroup) && (
+            <>
+              <p style={{ margin: '16px 0 8px', fontSize: 13, color: 'var(--muted)' }}>or</p>
+              <button className="btn btn-gold" onClick={handleWorkIndividually} disabled={workingIndividually}>
+                {workingIndividually ? 'Setting up…' : 'Work individually'}
+              </button>
+            </>
+          )}
         </>
       )}
 

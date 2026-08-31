@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import ClassStudentsPanel from '../components/ta/ClassStudentsPanel.jsx';
 import SectionGroupsPanel from '../components/ta/SectionGroupsPanel.jsx';
 import * as adminApi from '../api/admin.js';
 import * as sectionsApi from '../api/sections.js';
@@ -189,6 +190,9 @@ export default function ClassSectionsPage() {
 
       {error && <div className="alert alert-danger">{error}</div>}
 
+      <ClassStudentsPanel classId={Number(classId)} />
+
+      <h3 style={{ marginTop: 24 }}>Sections</h3>
       <div className="table-wrap">
         <table className="admin-table">
           <thead>

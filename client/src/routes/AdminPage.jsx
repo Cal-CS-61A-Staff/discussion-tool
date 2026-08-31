@@ -22,11 +22,17 @@ export default function AdminPage() {
   const [importError, setImportError] = useState('');
   const [importSummary, setImportSummary] = useState(null);
 
-  const [enrollmentFile, setEnrollmentFile] = useState(null);
-  const [enrollmentFileInputKey, setEnrollmentFileInputKey] = useState(0);
-  const [enrollmentImporting, setEnrollmentImporting] = useState(false);
-  const [enrollmentError, setEnrollmentError] = useState('');
-  const [enrollmentSummary, setEnrollmentSummary] = useState(null);
+  const [studentFile, setStudentFile] = useState(null);
+  const [studentFileInputKey, setStudentFileInputKey] = useState(0);
+  const [studentClassId, setStudentClassId] = useState('');
+  const [studentImporting, setStudentImporting] = useState(false);
+  const [studentError, setStudentError] = useState('');
+  const [studentSummary, setStudentSummary] = useState(null);
+
+  const [newTaEmail, setNewTaEmail] = useState('');
+  const [newTaName, setNewTaName] = useState('');
+  const [addingTa, setAddingTa] = useState(false);
+  const [addTaError, setAddTaError] = useState('');
 
   const readFileText = (file) =>
     new Promise((resolve, reject) => {
@@ -98,23 +104,40 @@ export default function AdminPage() {
     }
   };
 
-  const handleImportEnrollment = async (e) => {
+  const handleImportStudents = async (e) => {
     e.preventDefault();
-    if (!enrollmentFile) return;
-    setEnrollmentImporting(true);
-    setEnrollmentError('');
-    setEnrollmentSummary(null);
+    if (!studentFile || !studentClassId) return;
+    setStudentImporting(true);
+    setStudentError('');
+    setStudentSummary(null);
     try {
-      const text = await readFileText(enrollmentFile);
-      const res = await adminApi.importEnrollmentRoster(text);
-      setEnrollmentSummary(res.summary);
-      setEnrollmentFile(null);
-      setEnrollmentFileInputKey((k) => k + 1);
+      const text = await readFileText(studentFile);
+      const res = await adminApi.importStudentRoster(text, Number(studentClassId));
+      setStudentSummary(res.summary);
+      setStudentFile(null);
+      setStudentFileInputKey((k) => k + 1);
       load();
     } catch (err) {
-      setEnrollmentError(err.message);
+      setStudentError(err.message);
     } finally {
-      setEnrollmentImporting(false);
+      setStudentImporting(false);
+    }
+  };
+
+  const handleAddTa = async (e) => {
+    e.preventDefault();
+    if (!newTaEmail.trim()) return;
+    setAddingTa(true);
+    setAddTaError('');
+    try {
+      await adminApi.addTa(newTaEmail.trim(), newTaName.trim() || undefined);
+      setNewTaEmail('');
+      setNewTaName('');
+      load();
+    } catch (err) {
+      setAddTaError(err.message);
+    } finally {
+      setAddingTa(false);
     }
   };
 
@@ -240,12 +263,32 @@ export default function AdminPage() {
         </table>
       </div>
 
-      {tas.length === 0 && (
-        <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 12 }}>
-          No TA accounts yet — a TA needs to sign in once (Student/TA login, "TA / Instructor") before you can assign
-          them to a class.
-        </p>
-      )}
+      <form onSubmit={handleAddTa} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+        <input
+          className="form-control"
+          style={{ maxWidth: 240 }}
+          type="email"
+          value={newTaEmail}
+          onChange={(e) => setNewTaEmail(e.target.value)}
+          placeholder="new TA's email"
+          disabled={addingTa}
+        />
+        <input
+          className="form-control"
+          style={{ maxWidth: 200 }}
+          value={newTaName}
+          onChange={(e) => setNewTaName(e.target.value)}
+          placeholder="name (optional)"
+          disabled={addingTa}
+        />
+        <button className="btn btn-sm" type="submit" disabled={addingTa || !newTaEmail.trim()}>
+          {addingTa ? 'Adding…' : '+ Add a TA'}
+        </button>
+      </form>
+      {addTaError && <div className="alert alert-danger" style={{ marginTop: 8 }}>{addTaError}</div>}
+      <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8 }}>
+        A TA added by email can be assigned to a section right away, before they've ever signed in.
+      </p>
 
       <div className="panel" style={{ marginTop: 24 }}>
         <div className="panel-heading">
@@ -253,12 +296,10 @@ export default function AdminPage() {
         </div>
         <div className="panel-body">
           <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 0 }}>
-            Upload the staff-assignment sheet as a CSV — TA name, then repeating Section/Groups column pairs. In
-            Google Sheets: File → Download → Comma Separated Values (.csv). Each TA is matched by name (creating a
-            new TA account if none matches), and each Section column becomes a class assigned to that TA — it'll
-            show up under "Manage groups" right away. The "Groups" columns are read but not used — those
-            group-number ranges are on a different, global numbering scheme this app doesn't use; add groups to an
-            imported class from its "Manage groups" page afterward.
+            Upload a CSV with columns <code className="code">Name, Email, Sections</code> — where <em>Sections</em> is
+            one cell holding a <code className="code">;</code>-separated list of the section labels that TA teaches.
+            In Google Sheets: File → Download → Comma Separated Values (.csv). Each TA is matched by email (created if
+            new), and each listed section is created under CS 61A and assigned to them.
           </p>
           <form onSubmit={handleImportRoster}>
             <div className="form-group">
@@ -286,44 +327,56 @@ export default function AdminPage() {
 
       <div className="panel" style={{ marginTop: 24 }}>
         <div className="panel-heading">
-          <h4>Import student enrollment</h4>
+          <h4>Import student roster</h4>
         </div>
         <div className="panel-body">
           <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 0 }}>
-            Upload the per-student enrollment export as a CSV — columns{' '}
-            <code className="code">Student Email, Staff Email, Location, Day, Start, Type</code>. In Google Sheets:
-            File → Download → Comma Separated Values (.csv). Only rows where Type is "Discussion" are used;
-            Lab/Office Hours/Lecture rows are skipped. Each unique (Day, Start, Location) becomes a class assigned to
-            that row's Staff Email — it'll show up under "Manage groups" right away — and every Student Email is
-            recorded as enrolled in it, which discussion section a student belongs to, not which group. A student
-            can join any group within their enrolled section; trying to join a group in a different section they're
-            not enrolled in is rejected.
+            Pick a class, then upload a CSV with columns <code className="code">Email, Name</code> (Name optional).
+            Every email is added to that class's roster; a rostered student can join a group under any section of
+            the class. A class with an empty roster stays open to anyone.
           </p>
-          <form onSubmit={handleImportEnrollment}>
+          <form onSubmit={handleImportStudents}>
+            <div className="form-group">
+              <select
+                className="form-control"
+                style={{ maxWidth: 280 }}
+                value={studentClassId}
+                onChange={(e) => setStudentClassId(e.target.value)}
+                required
+              >
+                <option value="" disabled>
+                  Choose a class…
+                </option>
+                {classes.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.course_name}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="form-group">
               <input
-                key={enrollmentFileInputKey}
+                key={studentFileInputKey}
                 type="file"
                 accept=".csv,text/csv"
-                onChange={(e) => setEnrollmentFile(e.target.files[0] || null)}
+                onChange={(e) => setStudentFile(e.target.files[0] || null)}
                 required
               />
             </div>
-            {enrollmentError && <div className="alert alert-danger">{enrollmentError}</div>}
-            {enrollmentSummary && (
+            {studentError && <div className="alert alert-danger">{studentError}</div>}
+            {studentSummary && (
               <div className="alert alert-success">
-                Sections: {enrollmentSummary.sections_created} created, {enrollmentSummary.sections_matched} matched.
-                TAs: {enrollmentSummary.tas_created} created, {enrollmentSummary.tas_matched} matched. Enrollments:{' '}
-                {enrollmentSummary.enrollments_created} created, {enrollmentSummary.enrollments_matched} matched.
+                Enrollments: {studentSummary.enrollments_created} created, {studentSummary.enrollments_matched}{' '}
+                matched. {studentSummary.students_created} placeholder student accounts created.
               </div>
             )}
             <button
               className="btn btn-primary"
               type="submit"
-              disabled={enrollmentImporting || !enrollmentFile}
+              disabled={studentImporting || !studentFile || !studentClassId}
               style={{ marginTop: 12 }}
             >
-              {enrollmentImporting ? 'Importing…' : 'Import enrollment'}
+              {studentImporting ? 'Importing…' : 'Import students'}
             </button>
           </form>
         </div>

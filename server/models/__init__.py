@@ -1,6 +1,6 @@
 from server.models.user import User
-from server.models.klass import Class
-from server.models.section import Section, SectionCoTeacher, SectionEnrollment
+from server.models.klass import Class, ClassEnrollment
+from server.models.section import Section, SectionCoTeacher
 from server.models.worksheet import Worksheet, Question
 from server.models.group import Group, GroupAssignmentProgress, GroupMembership, GroupQuestionState, ScratchCode
 from server.models.attempt import Attempt
@@ -11,9 +11,9 @@ from server.models.test_run import TestRun
 __all__ = [
     "User",
     "Class",
+    "ClassEnrollment",
     "Section",
     "SectionCoTeacher",
-    "SectionEnrollment",
     "Worksheet",
     "Question",
     "Group",

@@ -31,12 +31,6 @@ export default function AssignmentsPage() {
   const [busyWorksheetId, setBusyWorksheetId] = useState(null);
   const [viewingAsStudentId, setViewingAsStudentId] = useState(null);
 
-  // Student-only, and only shown for the rare case a class has more than
-  // one section and the student hasn't joined a group in any of them yet —
-  // otherwise clicking an assignment resolves where to go on its own (see
-  // goToAssignment below).
-  const [startingWorksheetId, setStartingWorksheetId] = useState(null);
-
   const load = () => {
     setLoading(true);
     let fetchedClasses = [];
@@ -143,14 +137,14 @@ export default function AssignmentsPage() {
 
   const sectionIdToClassId = Object.fromEntries(sections.map((s) => [s.id, s.class_id]));
 
-  // Assignments belong to a class, not a section — a student only ever
-  // needs to pick a section the *first* time they touch a class with more
-  // than one section. Either way this always lands on AssignmentPage
-  // first, never straight into the live worksheet: joining a group is a
-  // deliberate action (leaving the page gives up your pen/active slot —
-  // see StudentWorksheetPage), not something to silently re-enter on a
-  // stray click. AssignmentPage's own "yours — click to resume" card is
-  // the explicit confirm step for an already-joined group.
+  // Assignments belong to a class, not a section. This always lands on
+  // AssignmentPage first, never straight into the live worksheet: joining
+  // a group is a deliberate action (leaving the page gives up your
+  // pen/active slot — see StudentWorksheetPage), not something to silently
+  // re-enter on a stray click. AssignmentPage now hosts the "pick your TA
+  // then a group" join panel itself, so we only need *a* section in the
+  // URL — the student's own if they have a group, else any section of the
+  // class as the starting point for the picker.
   const goToAssignment = (classId, worksheetId) => {
     const myGroup = myGroups.find((g) => sectionIdToClassId[g.section_id] === classId);
     if (myGroup) {
@@ -158,14 +152,12 @@ export default function AssignmentsPage() {
       return;
     }
     const classSections = sections.filter((s) => s.class_id === classId);
-    if (classSections.length === 1) {
-      navigate(`/classes/${classSections[0].id}/assignments/${worksheetId}`);
+    if (classSections.length === 0) {
+      setError('No sections in this class yet — ask your TA.');
       return;
     }
-    setStartingWorksheetId(worksheetId);
+    navigate(`/classes/${classSections[0].id}/assignments/${worksheetId}`);
   };
-
-  const startAssignment = (sectionId, worksheetId) => navigate(`/classes/${sectionId}/assignments/${worksheetId}`);
 
   if (loading) return <div className="page-loading">Loading…</div>;
 
@@ -321,8 +313,6 @@ export default function AssignmentsPage() {
                 {[...worksheets]
                   .sort((a, b) => Number(Boolean(b.my_group_id)) - Number(Boolean(a.my_group_id)))
                   .map((w) => {
-                  const classSections = sections.filter((s) => s.class_id === c.id);
-                  const picking = startingWorksheetId === w.id;
                   return (
                     <div className="panel panel-clickable" key={w.id} onClick={() => goToAssignment(c.id, w.id)}>
                       <div
@@ -353,42 +343,6 @@ export default function AssignmentsPage() {
                           )}
                         </div>
                       </div>
-                      {picking && (
-                        <div className="panel-body" onClick={(e) => e.stopPropagation()}>
-                          <p style={{ fontSize: 13, color: 'var(--muted)', marginTop: 0 }}>
-                            This class has more than one section, and you're not in one yet — which is yours for{' '}
-                            {c.course_name}?
-                          </p>
-                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                            <select
-                              className="form-control"
-                              style={{ maxWidth: 280 }}
-                              defaultValue=""
-                              onChange={(e) => {
-                                if (e.target.value) startAssignment(e.target.value, w.id);
-                              }}
-                            >
-                              <option value="" disabled>
-                                Choose a section…
-                              </option>
-                              {classSections.map((s) => (
-                                <option key={s.id} value={s.id}>
-                                  {s.name}
-                                  {s.ta_name ? ` — ${s.ta_name}` : ''}
-                                </option>
-                              ))}
-                            </select>
-                            <button type="button" className="btn btn-sm" onClick={() => setStartingWorksheetId(null)}>
-                              Cancel
-                            </button>
-                          </div>
-                          {classSections.length === 0 && (
-                            <p style={{ fontSize: 12, color: 'var(--muted)' }}>
-                              No sections in this class yet — ask your TA.
-                            </p>
-                          )}
-                        </div>
-                      )}
                     </div>
                   );
                 })}
