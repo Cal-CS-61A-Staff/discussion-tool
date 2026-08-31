@@ -29,6 +29,7 @@ export default function AssignmentsPage() {
   const [newDescription, setNewDescription] = useState('');
   const [creating, setCreating] = useState(false);
   const [busyWorksheetId, setBusyWorksheetId] = useState(null);
+  const [viewingAsStudentId, setViewingAsStudentId] = useState(null);
 
   // Student-only, and only shown for the rare case a class has more than
   // one section and the student hasn't joined a group in any of them yet —
@@ -113,6 +114,32 @@ export default function AssignmentsPage() {
   };
 
   const viewWork = (w) => navigate(`/groups/${w.my_group_id}/worksheets/${w.id}/work`);
+
+  // Drops a TA/admin into the exact same live worksheet flow a student
+  // gets — their own solo "individual" group (server/blueprints/sections.py:
+  // work_individually) — to sanity-check an assignment (doctests,
+  // prediction quiz, wording) end to end before publishing it. Which
+  // section it's filed under doesn't matter content-wise (a worksheet is
+  // shared across the whole class); listSections() already only returns
+  // sections this staff member has access to, so the first one is always
+  // safe to use.
+  const handleViewAsStudent = async (classId, worksheetId) => {
+    const classSections = sections.filter((s) => s.class_id === classId);
+    if (classSections.length === 0) {
+      setError('Add a section to this class before previewing an assignment.');
+      return;
+    }
+    setViewingAsStudentId(worksheetId);
+    setError('');
+    try {
+      const res = await sectionsApi.workIndividually(classSections[0].id);
+      navigate(`/classes/${classSections[0].id}/assignments/${worksheetId}/groups/${res.group.id}`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setViewingAsStudentId(null);
+    }
+  };
 
   const sectionIdToClassId = Object.fromEntries(sections.map((s) => [s.id, s.class_id]));
 
@@ -199,6 +226,7 @@ export default function AssignmentsPage() {
                   <tbody>
                     {worksheets.map((w) => {
                       const busy = busyWorksheetId === w.id;
+                      const viewingAsStudent = viewingAsStudentId === w.id;
                       return (
                         <tr key={w.id}>
                           <td>
@@ -219,6 +247,16 @@ export default function AssignmentsPage() {
                               }}
                             >
                               Edit
+                            </a>
+                            <a
+                              href="/"
+                              className="admin-action"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                if (!viewingAsStudent) handleViewAsStudent(c.id, w.id);
+                              }}
+                            >
+                              {viewingAsStudent ? 'Starting…' : 'View as student'}
                             </a>
                             <a
                               href="/"

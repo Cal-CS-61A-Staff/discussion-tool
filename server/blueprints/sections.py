@@ -1,7 +1,7 @@
 from flask import Blueprint, jsonify, request
 from sqlalchemy import func
 
-from server.auth import get_current_user, login_required, role_required, ta_owns_class, require_section_access
+from server.auth import get_current_user, login_required, role_required, ta_owns_class, ta_owns_section, require_section_access
 from server.config import Config
 from server.extensions import db
 from server.models.group import Group, GroupMembership
@@ -160,15 +160,23 @@ def work_individually(section_id):
     this class — the "work individually" option available alongside
     joining a group on every assignment. Reuses all the same group
     machinery for a group of one rather than a parallel solo code path.
+
+    Also backs "View as student" on the Assignments page: a TA/admin with
+    access to this section gets the exact same solo group/live worksheet
+    flow a student would, to sanity-check an assignment (doctests,
+    prediction quiz, wording) end to end before publishing it. Their
+    resulting group is excluded from grade rollups and the TA dashboard
+    (see worksheet_grades) so it never gets mistaken for a real student's
+    attempt.
     """
     user = get_current_user()
-    if user.role != "student":
-        return jsonify(error="only students can work individually"), 403
-
-    Section.query.get_or_404(section_id)
-    error = _enrollment_blocks_join(user, section_id)
-    if error:
-        return jsonify(error=error), 403
+    section = Section.query.get_or_404(section_id)
+    if user.role == "student":
+        error = _enrollment_blocks_join(user, section_id)
+        if error:
+            return jsonify(error=error), 403
+    elif not ta_owns_section(user, section):
+        return jsonify(error="you don't have access to this class"), 403
 
     group = (
         Group.query.filter_by(section_id=section_id, is_individual=True)

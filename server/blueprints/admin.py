@@ -847,6 +847,16 @@ def worksheet_grades(worksheet_id):
     # This assignment is shared across every section of its class, so
     # "every group working on it" spans all of those sections, not one.
     groups = Group.query.join(Section, Group.section_id == Section.id).filter(Section.class_id == worksheet.class_id).all()
+    # Exclude a TA/admin's own "View as student" solo group (work_individually,
+    # server/blueprints/sections.py) — a staff sanity-check run through an
+    # assignment isn't a real student attempt and shouldn't show up in grades.
+    staff_group_ids = {
+        m.group_id
+        for m in GroupMembership.query.join(User, GroupMembership.user_id == User.id)
+        .filter(User.role.in_(("ta", "admin")))
+        .all()
+    }
+    groups = [g for g in groups if g.id not in staff_group_ids]
 
     payload = []
     for group in groups:

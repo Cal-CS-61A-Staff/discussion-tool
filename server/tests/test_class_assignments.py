@@ -96,6 +96,56 @@ def test_worksheet_grades_span_every_section_of_the_class(app, client, db):
     assert group_ids == {group_a.id, group_b.id}
 
 
+def test_ta_can_work_individually_on_a_section_they_own(app, client, db):
+    """Backs "View as student" on the Assignments page — a TA gets the
+    same solo-group flow a student would, to sanity-check an assignment.
+    """
+    _klass, section_a, _section_b, ta_a, _ta_b, outsider_ta, admin = _make_class_with_two_sections()
+
+    login_as(client, ta_a)
+    resp = client.post(f"/api/sections/{section_a.id}/work-individually")
+    assert resp.status_code == 200
+    group = resp.get_json()["group"]
+    assert group["is_individual"] is True
+
+    # Calling it again reuses the same group rather than making a new one.
+    resp2 = client.post(f"/api/sections/{section_a.id}/work-individually")
+    assert resp2.get_json()["group"]["id"] == group["id"]
+
+    login_as(client, outsider_ta)
+    resp = client.post(f"/api/sections/{section_a.id}/work-individually")
+    assert resp.status_code == 403
+
+    login_as(client, admin)
+    resp = client.post(f"/api/sections/{section_a.id}/work-individually")
+    assert resp.status_code == 200
+
+
+def test_worksheet_grades_excludes_a_tas_own_preview_group(app, client, db):
+    klass, section_a, _section_b, ta_a, _ta_b, _outsider, _admin = _make_class_with_two_sections()
+
+    login_as(client, ta_a)
+    resp = client.post(f"/api/classes/{klass.id}/worksheets", json={"title": "Disc"})
+    worksheet_id = resp.get_json()["worksheet"]["id"]
+
+    resp = client.post(f"/api/sections/{section_a.id}/work-individually")
+    ta_group_id = resp.get_json()["group"]["id"]
+
+    student = User(display_name="Student", role="student")
+    db.session.add(student)
+    db.session.commit()
+    login_as(client, student)
+    resp = client.post(f"/api/sections/{section_a.id}/work-individually")
+    student_group_id = resp.get_json()["group"]["id"]
+
+    login_as(client, ta_a)
+    resp = client.get(f"/api/worksheets/{worksheet_id}/grades")
+    assert resp.status_code == 200
+    group_ids = {row["group_id"] for row in resp.get_json()["groups"]}
+    assert student_group_id in group_ids
+    assert ta_group_id not in group_ids
+
+
 def test_dashboard_only_shows_groups_from_sections_the_ta_owns(app, client, db):
     klass, section_a, section_b, ta_a, ta_b, _outsider, admin = _make_class_with_two_sections()
 
