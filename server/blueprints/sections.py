@@ -1,4 +1,5 @@
 from flask import Blueprint, jsonify, request
+from sqlalchemy import func
 
 from server.auth import get_current_user, login_required, role_required, ta_owns_class, require_section_access
 from server.config import Config
@@ -57,7 +58,7 @@ def class_worksheets(class_id):
     if not ta_owns_class(user, klass):
         query = query.filter_by(is_published=True)
     worksheets = query.order_by(Worksheet.created_at).all()
-    return jsonify(worksheets=[_serialize_worksheet(w) for w in worksheets])
+    return jsonify(worksheets=[_serialize_worksheet(w, user) for w in worksheets])
 
 
 @sections_bp.get("/sections/<int:section_id>/worksheets")
@@ -99,16 +100,6 @@ def my_groups():
     user = get_current_user()
     memberships = GroupMembership.query.filter_by(user_id=user.id).all()
     return jsonify(groups=[_serialize_group_summary(m.group) for m in memberships])
-
-
-@sections_bp.get("/me/assignments")
-@login_required
-def my_assignments():
-    """The current user's own "My Assignments" page: every assignment
-    their group(s) have completed, with their personal average confidence
-    rating on it.
-    """
-    return jsonify(assignments=serializers.build_my_assignments(get_current_user()))
 
 
 @sections_bp.get("/sections/<int:section_id>/groups")
@@ -226,11 +217,23 @@ def _serialize_class(klass, user):
     query = Worksheet.query.filter_by(class_id=klass.id)
     if not ta_owns_class(user, klass):
         query = query.filter_by(is_published=True)
+    # Counts real participation (anyone who's joined a group under any
+    # section of this class), not imported-roster enrollment — that's
+    # opt-in per section and often absent entirely for a demo/open class.
+    student_count = (
+        db.session.query(func.count(func.distinct(GroupMembership.user_id)))
+        .join(Group, Group.id == GroupMembership.group_id)
+        .join(Section, Section.id == Group.section_id)
+        .filter(Section.class_id == klass.id)
+        .scalar()
+    ) or 0
     return {
         "id": klass.id,
         "course_name": klass.course_name,
         "assignment_count": query.count(),
         "section_count": Section.query.filter_by(class_id=klass.id).count(),
+        "student_count": student_count,
+        "is_archived": klass.is_archived,
     }
 
 
@@ -261,14 +264,23 @@ def _serialize_section(section, user):
     }
 
 
-def _serialize_worksheet(worksheet):
-    return {
+def _serialize_worksheet(worksheet, user=None):
+    """`user` is only passed by class_worksheets (the shared Assignments
+    page) — section_worksheets doesn't need a viewer's own rating, so it
+    keeps calling this without one and my_rating/my_group_id stay absent.
+    """
+    payload = {
         "id": worksheet.id,
         "slug": worksheet.slug,
         "title": worksheet.title,
         "description": worksheet.description,
         "is_published": worksheet.is_published,
     }
+    if user is not None:
+        rating, group_id = serializers.student_worksheet_progress(user, worksheet)
+        payload["my_rating"] = rating
+        payload["my_group_id"] = group_id
+    return payload
 
 
 def _serialize_group_summary(group):

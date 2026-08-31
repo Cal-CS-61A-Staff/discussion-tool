@@ -12,6 +12,7 @@ export default function AssignmentPage() {
   const navigate = useNavigate();
 
   const [worksheet, setWorksheet] = useState(null);
+  const [classId, setClassId] = useState(null);
   const [myGroupInClass, setMyGroupInClass] = useState(null);
   const [questions, setQuestions] = useState([]);
   const [groupNumber, setGroupNumber] = useState('');
@@ -25,13 +26,15 @@ export default function AssignmentPage() {
     setLoading(true);
     const calls =
       user.role === 'student'
-        ? [sectionsApi.sectionWorksheets(sectionId), sectionsApi.myGroups()]
-        : [sectionsApi.sectionWorksheets(sectionId), adminApi.listQuestions(worksheetId)];
+        ? [sectionsApi.sectionWorksheets(sectionId), sectionsApi.myGroups(), sectionsApi.listSections()]
+        : [sectionsApi.sectionWorksheets(sectionId), adminApi.listQuestions(worksheetId), sectionsApi.listSections()];
 
     Promise.all(calls)
-      .then(([worksheetsRes, secondRes]) => {
+      .then(([worksheetsRes, secondRes, sectionsRes]) => {
         const found = worksheetsRes.worksheets.find((w) => String(w.id) === String(worksheetId));
         setWorksheet(found || null);
+        const section = sectionsRes.sections.find((s) => String(s.id) === String(sectionId));
+        setClassId(section ? section.class_id : null);
         if (user.role === 'student') {
           const mine = secondRes.groups.find(
             (g) => String(g.section_id) === String(sectionId) && !g.is_individual
@@ -90,10 +93,10 @@ export default function AssignmentPage() {
           href="/"
           onClick={(e) => {
             e.preventDefault();
-            navigate(`/classes/${sectionId}`);
+            navigate(classId ? `/assignments?classId=${classId}` : '/assignments');
           }}
         >
-          ← Back to class
+          ← Back to assignments
         </a>
       </div>
       <div className="page-header-row">

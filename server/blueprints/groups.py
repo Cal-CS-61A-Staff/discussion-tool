@@ -187,10 +187,12 @@ def practice_run(group_id, worksheet_id, question_id):
     assignment (the History page's "View work") or is just an earlier
     question on one still in progress (the live worksheet page's "view a
     previous question" navigation — the group's shared position doesn't
-    move). No prediction step (unlike the live flow), and doesn't touch
-    the group's real progress/typist/cooldown state: source="practice" is
-    excluded from has_passing_shared_run and the group's shared last-run
-    display, same as a scratch-editor run.
+    move). Includes the same prediction quiz as the live flow when a
+    `prediction` is given (optional here, unlike the live route, since a
+    plain re-run without one is still useful). Doesn't touch the group's
+    real progress/typist/cooldown state: source="practice" is excluded
+    from has_passing_shared_run and the group's shared last-run display,
+    same as a scratch-editor run.
     """
     group = _load_group(group_id)
     if group is None:
@@ -230,19 +232,28 @@ def practice_run(group_id, worksheet_id, question_id):
             429,
         )
 
+    prediction = (data.get("prediction") or "").strip()
+    predict_call = None
+    if prediction:
+        state = _get_or_create_state(group, question)
+        if state.predict_example_json:
+            predict_call = json.loads(state.predict_example_json)["call"]
+
     test_run = TestRun(
         group_id=group.id,
         question_id=question.id,
         user_id=user.id,
         source="practice",
-        prediction_text="",
+        prediction_text=prediction,
         code_snapshot=code,
         status="pending",
     )
     db.session.add(test_run)
     db.session.commit()
 
-    grading_queue_service.enqueue_grading_job(test_run.id, None, grader_cooldown_service.cooldown_seconds_for(user))
+    grading_queue_service.enqueue_grading_job(
+        test_run.id, predict_call, prediction or None, grader_cooldown_service.cooldown_seconds_for(user)
+    )
 
     return jsonify(test_run_id=test_run.id, status="pending"), 202
 
@@ -355,6 +366,38 @@ def give_up_typist_route(group_id):
     return jsonify(error="you are not the current typist"), 409
 
 
+@groups_bp.post("/<int:group_id>/leave")
+@login_required
+def leave_group_route(group_id):
+    """Fired from StudentWorksheetPage on unmount when navigating away
+    in-app — marks the caller inactive immediately (rather than waiting out
+    the normal stale-poll timeout) and hands off the pen right away if they
+    were holding it. Best-effort: a closed tab or refresh can't reliably
+    fire this at all (no beacon — see Config.TYPIST_STALE_SECONDS' own
+    fallback for that case), so this never needs to be load-bearing.
+    """
+    group = _load_group(group_id)
+    if group is None:
+        return jsonify(error="group not found"), 404
+
+    data = request.get_json(silent=True) or {}
+    worksheet_id = _worksheet_id_from_body(data)
+    if worksheet_id is None:
+        return jsonify(error="worksheet_id is required"), 400
+
+    user = get_current_user()
+    if _membership(group_id, user.id) is None:
+        return jsonify(error="not a member of this group"), 403
+
+    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    if error:
+        return error
+
+    progress = _get_or_create_progress(group, worksheet_id)
+    typist_service.leave(progress, group_id, user.id)
+    return jsonify(ok=True)
+
+
 @groups_bp.post("/<int:group_id>/attempts")
 @login_required
 def submit_attempt(group_id):
@@ -429,9 +472,23 @@ def submit_rating(group_id):
         return error
 
     progress = _get_or_create_progress(group, worksheet_id)
-    question = serializers.current_question(worksheet_id, progress.current_question_index)
-    if question is None:
-        return jsonify(error="worksheet already completed"), 409
+
+    # Reviewing an earlier, already-unlocked question (WorkBrowserPage, or
+    # StudentWorksheetPage's "browse a previous question" mode) should let
+    # you change how you felt about *that* question, not just the group's
+    # current one — so an explicit question_id targets any question the
+    # group has already reached. Omitting it keeps the original behavior
+    # (rate whatever's current), which is all the live worksheet page needs
+    # for its in-focus question.
+    question_id = data.get("question_id")
+    if question_id is not None:
+        question = Question.query.filter_by(id=question_id, worksheet_id=worksheet_id).first()
+        if question is None or question.order_index > progress.current_question_index:
+            return jsonify(error="question not found or not yet unlocked"), 404
+    else:
+        question = serializers.current_question(worksheet_id, progress.current_question_index)
+        if question is None:
+            return jsonify(error="worksheet already completed"), 409
 
     value = data.get("value")
     if value not in (1, 2, 3, 4, 5):
@@ -483,14 +540,15 @@ def advance(group_id):
 @groups_bp.post("/<int:group_id>/advance/force")
 @login_required
 def force_advance(group_id):
-    """Student-side escape hatch: any group member can skip the readiness
-    checks entirely (unlike /advance above) — e.g. a member who crashed
-    and can't come back to rate is otherwise an unbreakable deadlock (see
-    services/advance.py:all_members_rated, no timeout by design). The
-    frontend gates this behind a confirm dialog; nothing extra is enforced
-    server-side beyond being a member, since requiring group consensus
-    would defeat the point of an escape hatch for exactly the case where
-    consensus is unreachable.
+    """Student-side escape hatch: any group member can skip the ratings
+    requirement (unlike /advance above) — e.g. a member who crashed and
+    can't come back to rate is otherwise an unbreakable deadlock (see
+    services/advance.py:all_members_rated, no timeout by design). The tests
+    still have to actually pass (advance_service.try_advance enforces that
+    regardless of `force`) — this skips waiting on a missing person, not
+    the assignment itself. The frontend gates this behind a confirm dialog;
+    a group of one is rejected outright below, since there's no "someone
+    else" who could be the one stuck.
     """
     group = _load_group(group_id)
     if group is None:
@@ -504,6 +562,9 @@ def force_advance(group_id):
     user = get_current_user()
     if _membership(group_id, user.id) is None:
         return jsonify(error="not a member of this group"), 403
+
+    if GroupMembership.query.filter_by(group_id=group_id).count() <= 1:
+        return jsonify(error="you're the only person in this group — just rate and pass the tests normally"), 409
 
     error = _worksheet_for_group_or_error(group, worksheet_id, user)
     if error:
@@ -598,15 +659,9 @@ def run_tests(group_id):
         )
 
     state = _get_or_create_state(group, question)
-    prediction_feedback = None
+    predict_call = None
     if state.predict_example_json:
-        example = json.loads(state.predict_example_json)
-        prediction_feedback = {
-            "call": example["call"],
-            "expected": example["expected"],
-            "got": prediction,
-            "is_match": compare_service.normalize_and_compare(prediction, example["expected"]),
-        }
+        predict_call = json.loads(state.predict_example_json)["call"]
 
     test_run = TestRun(
         group_id=group.id,
@@ -627,7 +682,7 @@ def run_tests(group_id):
     # result, which lands in the exact same shape this endpoint used to
     # return synchronously.
     grading_queue_service.enqueue_grading_job(
-        test_run.id, prediction_feedback, grader_cooldown_service.cooldown_seconds_for(user)
+        test_run.id, predict_call, prediction, grader_cooldown_service.cooldown_seconds_for(user)
     )
 
     return jsonify(test_run_id=test_run.id, status="pending"), 202

@@ -42,8 +42,8 @@ export default function ScratchEditor({
       <div className="panel-body">
         <p style={{ fontSize: 13, color: 'var(--muted)', marginTop: 0 }}>
           {isIndividual
-            ? "Use this space to try things out separately from your main solution — it's only visible to you, and you can run it against the tests independently. It's saved automatically and stays here even after you submit."
-            : "Not the typist right now? Use this space to try things out on your own — it's only visible to you, and you can run it against the tests independently. It's saved automatically and stays here even after you submit."}
+            ? "Not the typist right now? Use this space to try things out on your own. It's only visible to you."
+            : "Not the typist right now? Use this space to try things out on your own. It's only visible to you."}
         </p>
         <CodeEditor code={code} readOnly={false} onChange={handleChange} editorLabel="scratch" />
         {saveStatus !== 'idle' && (

@@ -6,6 +6,7 @@ from sqlalchemy import func
 from server.auth import (
     admin_required,
     get_current_user,
+    login_required,
     require_class_access,
     require_section_access,
     role_required,
@@ -62,9 +63,20 @@ def assign_section_ta(section_id):
 
 
 @admin_bp.post("/classes")
-@admin_required
+@login_required
 def create_class():
-    """Admin-only — a new course, with no sections or assignments yet."""
+    """Admin-only — deliberately not role_required("ta"): a plain TA (or
+    student) gets this exact message rather than the shared decorator's
+    generic "admin role required", since it's the one place a TA might
+    reasonably expect staff-level access and not get it. Everything a TA
+    actually *works in* day to day (creating/editing assignments, managing
+    groups) stays TA-or-admin — this is scoped narrowly to standing up a
+    brand new course, alongside role assignment and archiving.
+    """
+    user = get_current_user()
+    if user.role != "admin":
+        return jsonify(error="You do not have permission to create a new class."), 403
+
     data = request.get_json(silent=True) or {}
     course_name = (data.get("course_name") or "").strip()
     if not course_name:
@@ -73,7 +85,26 @@ def create_class():
     klass = Class(course_name=course_name)
     db.session.add(klass)
     db.session.commit()
-    return jsonify(klass=_serialize_class(klass, get_current_user())), 201
+    return jsonify(klass=_serialize_class(klass, user)), 201
+
+
+@admin_bp.put("/classes/<int:class_id>/archive")
+@admin_required
+def archive_class(class_id):
+    """Admin-only, like create_class above — archiving and role
+    assignment are the two things this app reserves for admins specifically
+    beyond regular staff access, so this doesn't use require_class_access's
+    ownership check at all (an admin can always act on any class).
+    """
+    klass = Class.query.get_or_404(class_id)
+    data = request.get_json(silent=True) or {}
+    is_archived = data.get("is_archived")
+    if not isinstance(is_archived, bool):
+        return jsonify(error="is_archived must be a boolean"), 400
+
+    klass.is_archived = is_archived
+    db.session.commit()
+    return jsonify(klass=_serialize_class(klass, get_current_user()))
 
 
 @admin_bp.delete("/classes/<int:class_id>")

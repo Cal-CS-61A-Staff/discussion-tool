@@ -9,6 +9,13 @@ two modes selected by the GRADING_MODE env var:
 
   doctest — runs the >>> examples already present in the student's own
   function docstrings (see doctest_runner.py); test_code.py is unused.
+
+If PL_PREDICT_CALL is set (the prediction-quiz call, TA/content-authored —
+never student input, so evaluating it here is no different a risk than
+running the student's own code, which this process already does), it's
+evaluated against the student's own definitions after they load — the whole
+point being to grade the student's *prediction* against what their own code
+actually does, bugs included, not against a reference solution.
 """
 
 import contextlib
@@ -16,6 +23,7 @@ import io
 import json
 import os
 import sys
+import traceback
 import types
 from types import SimpleNamespace
 
@@ -29,6 +37,7 @@ RESULTS_DIR = '/grade/results'
 
 def main():
     grading_mode = os.environ.get('GRADING_MODE', 'pltest')
+    predict_call = os.environ.get('PL_PREDICT_CALL') or None
     secret_filename = os.environ['PL_RESULT_FILENAME']
     result = {
         'test_results': [],
@@ -36,6 +45,7 @@ def main():
         'total_count': 0,
         'error': None,
         'student_output': '',
+        'predict_result': None,
     }
 
     setup_path = os.path.join(WORK_DIR, 'setup_code.py')
@@ -65,9 +75,12 @@ def main():
             result['error'] = 'Your code raised an error before any tests could run: {0}: {1}'.format(
                 type(e).__name__, e
             )
+            result['predict_result'] = _predict_result_for_exec_failure()
             result['student_output'] = captured.getvalue()
             write_results(secret_filename, result)
             return
+
+        result['predict_result'] = _evaluate_predict_call(predict_call, module.__dict__)
 
         with contextlib.redirect_stdout(captured):
             test_results = run_doctests(module)
@@ -85,9 +98,12 @@ def main():
         result['error'] = 'Your code raised an error before any tests could run: {0}: {1}'.format(
             type(e).__name__, e
         )
+        result['predict_result'] = _predict_result_for_exec_failure()
         result['student_output'] = captured.getvalue()
         write_results(secret_filename, result)
         return
+
+    result['predict_result'] = _evaluate_predict_call(predict_call, namespace)
 
     test_namespace = {}
     try:
@@ -112,6 +128,74 @@ def _exec_setup_and_student(setup_code, student_code, target_ns, captured):
     with contextlib.redirect_stdout(captured):
         exec(compile(setup_code, 'setup_code.py', 'exec'), target_ns)
         exec(compile(student_code, 'student_code.py', 'exec'), target_ns)
+
+
+def _evaluate_predict_call(predict_call, target_ns):
+    """None if there's no prediction quiz on this question at all. Otherwise
+    one of:
+      {"kind": "function"} — the call displayed something callable; showing
+        its repr (a memory address) isn't meaningful to a student.
+      {"kind": "value", "repr": ...} — anything else, shown/matched as-is.
+      {"kind": "error", "traceback": ...} — the call itself raised. Unlike a
+        value mismatch (which hides the answer to make the student trace
+        through it), a real error is a bug worth just showing them outright.
+
+    `predict_call` can be several lines (server/services/predict_examples.py
+    accumulates a docstring's prior lines, e.g. a `t = Tree(...)` setup
+    before `tree_sum(t)`, since real doctest examples share one running
+    session — likewise `a = hailstone(10)` before a later `b = hailstone(1)`
+    in the same docstring needs `a`/`hailstone` still bound). All but the
+    last line run for their side effects only, with their own output
+    discarded — otherwise replaying an earlier example's prints would leak
+    into and contaminate *this* example's captured output. Only the last
+    line's output is what gets compared. It runs via `compile(...,
+    'single')` — the same mode the real REPL/doctest use — so a bare
+    expression's value is displayed via sys.displayhook exactly like typing
+    it at a prompt would, and a statement that prints internally (the
+    common "predict what prints" style, e.g. `a = hailstone(10)`) is
+    captured the same way: as stdout, not a return value.
+    """
+    if predict_call is None:
+        return None
+    lines = [line for line in predict_call.splitlines() if line.strip()]
+    if not lines:
+        return None
+
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            for line in lines[:-1]:
+                exec(compile(line, 'predict_call', 'single'), target_ns)  # noqa: S102 - trusted, see module docstring
+
+        displayed = []
+        original_displayhook = sys.displayhook
+
+        def _capture_displayhook(value):
+            if value is not None:
+                displayed.append(value)
+            original_displayhook(value)
+
+        captured = io.StringIO()
+        try:
+            sys.displayhook = _capture_displayhook
+            with contextlib.redirect_stdout(captured):
+                exec(compile(lines[-1], 'predict_call', 'single'), target_ns)  # noqa: S102
+        finally:
+            sys.displayhook = original_displayhook
+    except Exception:  # noqa: BLE001 - untrusted code
+        return {'kind': 'error', 'traceback': traceback.format_exc()}
+
+    if displayed and callable(displayed[-1]):
+        return {'kind': 'function'}
+    output = captured.getvalue().rstrip('\n')
+    return {'kind': 'value', 'repr': output if output else 'None'}
+
+
+def _predict_result_for_exec_failure():
+    """The student's code didn't even load — the prediction call couldn't
+    possibly run, so it gets the same traceback as the main grading error
+    rather than being silently left out of the response.
+    """
+    return {'kind': 'error', 'traceback': traceback.format_exc()}
 
 
 def _accumulate(result, test_results):

@@ -45,7 +45,28 @@ export default function StudentWorksheetPage() {
   );
   const { data, error, loading, refetch } = usePolling(fetchState, { intervalMs: 2500 });
 
+  // In-app navigation away from this group/worksheet (Back, another
+  // assignment, etc.) drops the pen and active-member status immediately
+  // instead of waiting out the normal ~45s stale-poll timeout. Doesn't fire
+  // on a closed tab or refresh — no reliable way to guarantee that in a
+  // browser — so the stale-poll fallback still has to exist regardless.
+  useEffect(() => {
+    return () => {
+      groupsApi.leaveGroup(groupId, worksheetId).catch(() => {});
+    };
+  }, [groupId, worksheetId]);
+
   const focusIndex = data?.group.current_question_index;
+
+  // Snap back to the group's new focus whenever it actually moves — a
+  // normal advance or someone using the "skip" escape hatch. Otherwise a
+  // member who was browsing an earlier question when the group advanced
+  // would silently keep viewing a question the whole group has now moved
+  // past, instead of following along like everyone else.
+  useEffect(() => {
+    setViewedIndex(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusIndex]);
   const effectiveIndex = viewedIndex === null ? focusIndex : viewedIndex;
   const isViewingFocus = effectiveIndex === focusIndex;
 
@@ -103,7 +124,18 @@ export default function StudentWorksheetPage() {
   }
   if (!data) return null;
 
-  const backToAssignment = () => navigate(`/classes/${sectionId}/assignments/${worksheetId}`);
+  // For a real group, AssignmentPage's "yours — click to resume" card gets
+  // you straight back in. But that page only ever recognizes a *group*
+  // group as "mine" (server/blueprints/sections.py:my_groups filters out
+  // individual ones on purpose — there's nothing to "resume" via a group
+  // picker for a solo worksheet) — so for individual mode it would always
+  // show the join-a-group chooser, which makes no sense to land on when
+  // you were just working solo. Skip straight past it to the assignments
+  // list instead.
+  const backToAssignment = () =>
+    data.group.is_individual
+      ? navigate('/assignments')
+      : navigate(`/classes/${sectionId}/assignments/${worksheetId}`);
 
   const breadcrumb = (
     <div className="breadcrumb-row">
@@ -127,10 +159,25 @@ export default function StudentWorksheetPage() {
     return (
       <div>
         {breadcrumb}
-        <div className="panel">
-          <div className="panel-body">
-            <h2>Assignment complete</h2>
-            <p>Your group has finished all {data.total_questions} questions. Nice work!</p>
+        <div className="panel" style={{ marginTop: 16, textAlign: 'center' }}>
+          <div className="panel-body" style={{ padding: '40px 20px' }}>
+            <div style={{ fontSize: 40, marginBottom: 8 }}>🎉</div>
+            <h2 style={{ margin: '0 0 4px' }}>Assignment complete</h2>
+            <p style={{ color: 'var(--muted)', marginBottom: 24 }}>
+              Your group has finished all {data.total_questions} questions. Nice work!
+            </p>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+              <button type="button" className="btn" onClick={backToAssignment}>
+                ← Back to assignment
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => navigate(`/groups/${groupId}/worksheets/${worksheetId}/work`)}
+              >
+                Review your answers
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -242,16 +289,25 @@ export default function StudentWorksheetPage() {
       </div>
 
       <ProgressStrip current={focusIndex} total={data.total_questions} />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-        {effectiveIndex > 0 && (
-          <button className="btn btn-sm" onClick={() => setViewedIndex(effectiveIndex - 1)}>
-            ← Previous question
-          </button>
-        )}
-        {!isViewingFocus && (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div style={{ display: 'flex', gap: 10 }}>
+          {effectiveIndex > 0 && (
+            <button className="btn btn-sm" onClick={() => setViewedIndex(effectiveIndex - 1)}>
+              ← Previous question
+            </button>
+          )}
+          {effectiveIndex < focusIndex && (
+            <button className="btn btn-sm" onClick={() => setViewedIndex(effectiveIndex + 1)}>
+              Next question →
+            </button>
+          )}
+        </div>
+        {!isViewingFocus ? (
           <button className="btn btn-sm btn-primary" onClick={() => setViewedIndex(null)}>
             Jump to current question →
           </button>
+        ) : (
+          <span />
         )}
       </div>
 
@@ -348,7 +404,6 @@ export default function StudentWorksheetPage() {
                 memberCount={data.members.length}
                 onAdvance={handleAdvance}
                 onForceAdvance={handleForceAdvance}
-                isIndividual={data.group.is_individual}
                 advancing={advancing}
               />
             </div>
@@ -360,7 +415,13 @@ export default function StudentWorksheetPage() {
             {viewedLoading && <p style={{ color: 'var(--muted)' }}>Loading…</p>}
             {viewedError && <div className="alert alert-danger">{viewedError}</div>}
             {viewedQuestion && (
-              <PracticeQuestion groupId={groupId} worksheetId={worksheetId} question={viewedQuestion} showPrompt />
+              <PracticeQuestion
+                key={viewedQuestion.question_id}
+                groupId={groupId}
+                worksheetId={worksheetId}
+                question={viewedQuestion}
+                showPrompt
+              />
             )}
           </div>
         </div>

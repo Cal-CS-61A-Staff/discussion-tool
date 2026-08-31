@@ -3,7 +3,6 @@ import { api } from './client.js';
 export const listClasses = () => api.get('/classes');
 export const listSections = () => api.get('/sections');
 export const myGroups = () => api.get('/me/groups');
-export const myAssignments = () => api.get('/me/assignments');
 export const sectionWorksheets = (sectionId) => api.get(`/sections/${sectionId}/worksheets`);
 export const classWorksheets = (classId) => api.get(`/classes/${classId}/worksheets`);
 export const sectionGroups = (sectionId) => api.get(`/sections/${sectionId}/groups`); // TA-only

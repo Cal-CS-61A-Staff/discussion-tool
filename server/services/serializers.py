@@ -7,13 +7,14 @@ from sqlalchemy.orm import joinedload
 from server.config import Config
 from server.extensions import db
 from server.models.attempt import Attempt
-from server.models.group import Group, GroupAssignmentProgress, GroupMembership, ScratchCode
+from server.models.group import Group, GroupAssignmentProgress, GroupMembership, GroupQuestionState, ScratchCode
 from server.models.rating import Rating
 from server.models.test_run import TestRun
 from server.models.worksheet import Question, Worksheet
 from server.services import advance as advance_service
 from server.services import cooldown as cooldown_service
 from server.services import grader_cooldown as grader_cooldown_service
+from server.services.predict_examples import extract_predict_examples_for_question
 from server.utils import utcnow
 
 TA_ATTEMPT_HISTORY_LIMIT = 20
@@ -391,44 +392,63 @@ def build_section_progress(section):
     return payload
 
 
-def build_my_assignments(user):
-    """Every assignment the current user's own group(s) have completed,
-    with their *personal* average confidence rating across it (mean of
-    their own Rating.value per question, not the whole group's) — a
-    student's "My Assignments" page. Spans however many groups they're a
-    member of; an assignment completed in more than one group appears once
-    per group, since progress and ratings are per-group.
-    """
-    memberships = GroupMembership.query.filter_by(user_id=user.id).all()
-    payload = []
-    for membership in memberships:
-        group = membership.group
-        progresses = GroupAssignmentProgress.query.filter_by(group_id=group.id).all()
-        for progress in progresses:
-            worksheet = Worksheet.query.get(progress.worksheet_id)
-            if worksheet is None or not worksheet.is_published:
-                continue
-            question_ids = [
-                q.id for q in Question.query.filter_by(worksheet_id=worksheet.id).with_entities(Question.id).all()
-            ]
-            if not question_ids or progress.current_question_index < len(question_ids):
-                continue  # not completed yet
+def student_worksheet_progress(user, worksheet):
+    """(my_rating, my_group_id) for `user`'s own engagement with
+    `worksheet`, via whichever of their groups has progress on it —
+    (None, None) if they haven't started it via any group yet. Backs the
+    shared Assignments page's per-row rating display (server/blueprints/
+    sections.py:_serialize_worksheet) — unlike the old "My Assignments"
+    view this replaced, it's not restricted to *completed* assignments,
+    since the page now lists every assignment in the class regardless of
+    where a student's group currently stands on it.
 
-            my_avg_rating = (
-                db.session.query(func.avg(Rating.value))
-                .filter(Rating.user_id == user.id, Rating.question_id.in_(question_ids), Rating.group_id == group.id)
-                .scalar()
-            )
-            payload.append(
-                {
-                    "group_id": group.id,
-                    "group_name": group.name,
-                    "worksheet_id": worksheet.id,
-                    "title": worksheet.title,
-                    "my_average_rating": round(my_avg_rating, 1) if my_avg_rating is not None else None,
-                }
-            )
-    return payload
+    If a student has more than one group with progress on this worksheet
+    (e.g. they switched sections), the most recently active one wins —
+    rare in practice, and there's no single "correct" answer for that case.
+    """
+    membership_group_ids = [m.group_id for m in GroupMembership.query.filter_by(user_id=user.id).all()]
+    if not membership_group_ids:
+        return None, None
+
+    progress = (
+        GroupAssignmentProgress.query.filter(
+            GroupAssignmentProgress.worksheet_id == worksheet.id,
+            GroupAssignmentProgress.group_id.in_(membership_group_ids),
+        )
+        .order_by(GroupAssignmentProgress.question_started_at.desc())
+        .first()
+    )
+    if progress is None:
+        return None, None
+
+    question_ids = [
+        q.id for q in Question.query.filter_by(worksheet_id=worksheet.id).with_entities(Question.id).all()
+    ]
+    my_avg_rating = (
+        db.session.query(func.avg(Rating.value))
+        .filter(Rating.user_id == user.id, Rating.question_id.in_(question_ids), Rating.group_id == progress.group_id)
+        .scalar()
+        if question_ids
+        else None
+    )
+    return (round(my_avg_rating, 1) if my_avg_rating is not None else None), progress.group_id
+
+
+def _predict_call_for(group, question):
+    """The same {call, ...} a live/current view of this question would show
+    (server/blueprints/groups.py:_get_or_create_state) — reused here rather
+    than randomly re-picked, so browsing back to a question shows the exact
+    call the group was actually quizzed on while it was current. Falls back
+    to computing one fresh (deterministically, the first candidate — not
+    random.choice, so it doesn't change on every page load) for a question
+    that was unlocked but never actually made current, which shouldn't
+    normally happen but isn't worth a hard failure over.
+    """
+    state = GroupQuestionState.query.filter_by(group_id=group.id, question_id=question.id).first()
+    if state is not None and state.predict_example_json:
+        return json.loads(state.predict_example_json)["call"]
+    examples = extract_predict_examples_for_question(question)
+    return examples[0]["call"] if examples else None
 
 
 def build_group_work(group, worksheet_id, user):
@@ -474,6 +494,7 @@ def build_group_work(group, worksheet_id, user):
             .first()
         )
         scratch = ScratchCode.query.filter_by(group_id=group.id, question_id=question.id, user_id=user.id).first()
+        rating = Rating.query.filter_by(group_id=group.id, question_id=question.id, user_id=user.id).first()
         payload.append(
             {
                 "question_id": question.id,
@@ -482,8 +503,11 @@ def build_group_work(group, worksheet_id, user):
                 "prompt": question.prompt,
                 "grading_mode": question.grading_mode,
                 "code": latest_run.code_snapshot if latest_run else None,
+                "starter_code": question.starter_code or "",
                 "passed": advance_service.has_ever_passed_tests(group.id, question.id),
                 "scratch_code": scratch.code if scratch and scratch.code else None,
+                "predict_call": _predict_call_for(group, question),
+                "my_rating": rating.value if rating else None,
             }
         )
     return {"worksheet_title": worksheet.title, "questions": payload}

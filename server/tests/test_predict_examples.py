@@ -32,17 +32,23 @@ def test_extracts_real_doctest_examples_from_docstring():
     examples = extract_predict_examples("some prompt text", HAILSTONE_STARTER, None)
 
     assert len(examples) == 4
+    # A docstring's examples share one running session in real doctest
+    # semantics -- `a` alone (examples[1]) only means anything with the
+    # `a = hailstone(10)` assignment still in scope, so the call has to
+    # include it too, not just the line that actually shows output.
     assert examples[0] == {"call": "a = hailstone(10)", "expected": "10\n5\n16\n8\n4\n2\n1"}
-    assert examples[1] == {"call": "a", "expected": "7"}
+    assert examples[1] == {"call": "a = hailstone(10)\na", "expected": "7"}
     # the last example must not swallow anything past the docstring (the
     # closing """ / trailing `pass`) into its expected output
-    assert examples[3] == {"call": "b", "expected": "1"}
+    assert examples[3] == {"call": "a = hailstone(10)\na\nb = hailstone(1)\nb", "expected": "1"}
 
 
 def test_falls_back_to_expected_output_when_prompt_has_no_shown_output():
     examples = extract_predict_examples(TREE_PROMPT, TREE_STARTER, "6")
 
-    assert examples == [{"call": "tree_sum(t)", "expected": "6"}]
+    # Both >>> lines, not just the last -- `tree_sum(t)` alone would hit a
+    # bare NameError in the sandbox without `t = Tree(...)` run first.
+    assert examples == [{"call": "t = Tree(1, [Tree(2), Tree(3)])\ntree_sum(t)", "expected": "6"}]
 
 
 def test_returns_empty_when_neither_source_is_usable():

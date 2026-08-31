@@ -36,16 +36,21 @@ _DOCKER_RUN_FLAGS = [
 ]
 
 
-def run_grader(question, code):
+def run_grader(question, code, predict_call=None):
     """Run `code` against `question.setup_code`/`question.test_code`.
 
     Returns a dict shaped like the grader image's JSON result:
     {test_results: [...], passed_count, total_count, error,
-     student_output}. On any infrastructure failure
+     student_output, predict_result}. On any infrastructure failure
     (container wouldn't start, timed out, produced no parseable output)
     returns a synthesized result with `error` set instead of raising —
     this executes untrusted code, so failure is an expected outcome to
     report to the caller, not an exceptional one.
+
+    `predict_call` (TA/content-authored, never student input) is evaluated
+    against the student's own code inside the sandbox — see
+    grader/harness/runner.py — so the prediction quiz grades what the
+    student's code actually does, not a reference solution.
     """
     with tempfile.TemporaryDirectory(prefix="grader-submission-") as tmp_dir:
         # tempfile.TemporaryDirectory defaults to 0700 (owner-only), which
@@ -63,6 +68,7 @@ def run_grader(question, code):
 
         container_name = f"grader-{uuid.uuid4().hex[:12]}"
         grading_mode = getattr(question, "grading_mode", None) or "pltest"
+        predict_env = ["-e", f"PL_PREDICT_CALL={predict_call}"] if predict_call else []
         try:
             subprocess.run(
                 [
@@ -74,6 +80,7 @@ def run_grader(question, code):
                     *_DOCKER_RUN_FLAGS,
                     "-e",
                     f"GRADING_MODE={grading_mode}",
+                    *predict_env,
                     "-v",
                     f"{tmp_dir}:/submission:ro",
                     Config.GRADER_IMAGE,

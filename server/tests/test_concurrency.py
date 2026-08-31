@@ -174,6 +174,46 @@ def test_give_up_typist_route_succeeds_with_other_members(app, client):
     assert resp.status_code == 200
 
 
+def test_leave_route_marks_inactive_immediately_and_hands_off_the_pen(app, client):
+    """StudentWorksheetPage's unmount-on-in-app-navigation signal
+    (server/services/typist.py:leave) — the typist leaving shouldn't have
+    to wait out TYPIST_STALE_SECONDS for someone else to notice.
+    """
+    from server.tests.conftest import login_as
+
+    group, progress, _question, users = _make_group_with_members(2)
+    typist_service.assign_random_typist(progress, group.id)
+    leaving_user = next(u for u in users if u.id == progress.typist_user_id)
+    other_user = next(u for u in users if u.id != progress.typist_user_id)
+    login_as(client, leaving_user)
+
+    resp = client.post(f"/api/groups/{group.id}/leave", json={"worksheet_id": progress.worksheet_id})
+    assert resp.status_code == 200
+
+    membership = GroupMembership.query.filter_by(group_id=group.id, user_id=leaving_user.id).first()
+    stale_cutoff = utcnow() - timedelta(seconds=Config.TYPIST_STALE_SECONDS)
+    assert membership.last_seen_at < stale_cutoff
+
+    db.session.refresh(progress)
+    assert progress.typist_user_id == other_user.id
+
+
+def test_leave_route_does_nothing_extra_when_not_the_typist(app, client):
+    from server.tests.conftest import login_as
+
+    group, progress, _question, users = _make_group_with_members(2)
+    typist_service.assign_random_typist(progress, group.id)
+    non_typist = next(u for u in users if u.id != progress.typist_user_id)
+    original_typist_id = progress.typist_user_id
+    login_as(client, non_typist)
+
+    resp = client.post(f"/api/groups/{group.id}/leave", json={"worksheet_id": progress.worksheet_id})
+    assert resp.status_code == 200
+
+    db.session.refresh(progress)
+    assert progress.typist_user_id == original_typist_id  # untouched -- they weren't holding the pen
+
+
 def test_reassign_if_stale_hands_off_an_inactive_typists_pen(app):
     group, progress, _question, users = _make_group_with_members(2)
     progress.typist_user_id = users[0].id
@@ -248,32 +288,62 @@ def test_advance_requires_a_passing_run(app):
     assert progress.current_question_index == 1
 
 
-def test_try_advance_force_skips_readiness_checks(app):
-    group, progress, question, _users = _make_group_with_members(2)
-    # Nobody has rated and there's no passing run — the normal gate fails.
+def test_try_advance_force_skips_only_the_ratings_check(app):
+    group, progress, question, users = _make_group_with_members(2)
+    # Nobody has rated and there's no passing run — the normal gate fails,
+    # and force can't get past it either since there's still no passing run.
     ok, error = advance_service.try_advance(progress, group.id, question.id)
     assert ok is False
 
+    ok, error = advance_service.try_advance(progress, group.id, question.id, force=True)
+    assert ok is False
+
+    # Once the group has a passing shared run, force can skip the (still
+    # unmet) ratings requirement.
+    _add_passing_shared_run(group.id, question.id, users[0].id)
     ok, error = advance_service.try_advance(progress, group.id, question.id, force=True)
     assert ok is True
     assert error is None
     assert progress.current_question_index == 1
 
 
-def test_force_advance_route_works_for_any_member_with_no_ratings(app, client):
+def test_force_advance_route_requires_passing_tests(app, client):
     from server.tests.conftest import login_as
 
     group, progress, question, users = _make_group_with_members(2)
     login_as(client, users[0])
 
+    # No passing run yet — force can't skip that requirement.
     resp = client.post(
         f"/api/groups/{group.id}/advance/force",
         json={"worksheet_id": progress.worksheet_id},
     )
+    assert resp.status_code == 409
 
+    _add_passing_shared_run(group.id, question.id, users[0].id)
+    resp = client.post(
+        f"/api/groups/{group.id}/advance/force",
+        json={"worksheet_id": progress.worksheet_id},
+    )
     assert resp.status_code == 200
     db.session.refresh(progress)
     assert progress.current_question_index == 1
+
+
+def test_force_advance_route_rejected_for_a_solo_group(app, client):
+    from server.tests.conftest import login_as
+
+    group, progress, question, users = _make_group_with_members(1)
+    login_as(client, users[0])
+    _add_passing_shared_run(group.id, question.id, users[0].id)
+
+    resp = client.post(
+        f"/api/groups/{group.id}/advance/force",
+        json={"worksheet_id": progress.worksheet_id},
+    )
+    assert resp.status_code == 409
+    db.session.refresh(progress)
+    assert progress.current_question_index == 0
 
 
 def test_remove_group_member_unsticks_a_stalled_advance(app, client):
@@ -378,6 +448,48 @@ def test_practice_run_route_allows_an_already_unlocked_earlier_question(app, cli
     assert resp.get_json()["status"] == "pending"
 
 
+def test_practice_run_includes_the_same_prediction_quiz_as_the_live_flow(app, client, monkeypatch):
+    """Browsing back to an earlier question still gets the full
+    experience — code, prediction, and results — not just a bare re-run
+    (server/services/serializers.py:build_group_work's predict_call,
+    client/src/components/student/PracticeQuestion.jsx).
+    """
+    from server.tests.conftest import login_as
+
+    group, progress, question_0, users = _make_group_with_members(1)
+
+    enqueued = {}
+    monkeypatch.setattr(
+        "server.blueprints.groups.grading_queue_service.enqueue_grading_job",
+        lambda test_run_id, predict_call, student_prediction, cooldown_seconds: enqueued.update(
+            predict_call=predict_call, student_prediction=student_prediction
+        ),
+    )
+    # Two calls in this one test would otherwise hit the real per-user
+    # grader cooldown -- not what's under test here.
+    monkeypatch.setattr("server.blueprints.groups.grader_cooldown_service.try_acquire", lambda user: True)
+    login_as(client, users[0])
+
+    # No prediction given at all -- a plain re-run, same as before this
+    # existed, shouldn't try to resolve or send a predict_call.
+    resp = client.post(
+        f"/api/groups/{group.id}/worksheets/{progress.worksheet_id}/questions/{question_0.id}/practice-run",
+        json={"code": "def f(): return 1"},
+    )
+    assert resp.status_code == 202
+    assert enqueued["predict_call"] is None
+    assert enqueued["student_prediction"] is None
+
+    # A prediction given -- resolves the same call the live view would show.
+    resp = client.post(
+        f"/api/groups/{group.id}/worksheets/{progress.worksheet_id}/questions/{question_0.id}/practice-run",
+        json={"code": "def f(): return 1", "prediction": "my guess"},
+    )
+    assert resp.status_code == 202
+    assert enqueued["predict_call"] == "this code"
+    assert enqueued["student_prediction"] == "my guess"
+
+
 def test_practice_run_route_rejects_a_not_yet_unlocked_question(app, client):
     from server.tests.conftest import login_as
 
@@ -410,6 +522,20 @@ def test_build_group_work_excludes_locked_questions(app):
     ids = [q["question_id"] for q in work["questions"]]
     assert question_0.id in ids
     assert question_1.id not in ids
+
+
+def test_build_group_work_includes_the_predict_call_for_practice(app):
+    """The "view previous question"/"View work" replay needs the same
+    predict_call the live view showed, so PracticeQuestion.jsx can render
+    the full prediction quiz there too, not just a bare code+run block."""
+    group, progress, question_0, users = _make_group_with_members(1)
+
+    work = serializers.build_group_work(group, progress.worksheet_id, users[0])
+    # question_0's fixture prompt has no `>>>` example, so
+    # extract_predict_examples falls back to this literal placeholder --
+    # what matters is that *some* call was resolved without a stored
+    # GroupQuestionState (this question was never actually made current).
+    assert work["questions"][0]["predict_call"] == "this code"
 
 
 def test_update_scratch_code_route_persists_per_user(app, client):
@@ -455,6 +581,71 @@ def test_build_group_work_includes_viewers_own_scratch_code(app):
 
     assert work_mine["questions"][0]["scratch_code"] == "mine"
     assert work_theirs["questions"][0]["scratch_code"] is None
+
+
+def test_build_group_work_includes_starter_code_and_my_rating(app):
+    """Reviewing an already-unlocked question (WorkBrowserPage,
+    PracticeQuestion.jsx) needs full parity with the live in-focus view:
+    starter_code so the editor has something to start from when there's no
+    submitted run yet (the current, still-in-progress question), and
+    my_rating so the confidence scale there reflects — and can update —
+    the viewer's own existing rating rather than always starting blank.
+    """
+    group, progress, question, users = _make_group_with_members(1)
+
+    work = serializers.build_group_work(group, progress.worksheet_id, users[0])
+    assert work["questions"][0]["starter_code"] == (question.starter_code or "")
+    assert work["questions"][0]["my_rating"] is None
+
+    db.session.add(Rating(group_id=group.id, question_id=question.id, user_id=users[0].id, value=3))
+    db.session.commit()
+
+    work = serializers.build_group_work(group, progress.worksheet_id, users[0])
+    assert work["questions"][0]["my_rating"] == 3
+
+
+def test_ratings_route_can_target_a_past_unlocked_question(app, client):
+    """Reviewing a past question should let you change how you felt about
+    *that* question specifically, independent of whatever the group's
+    current question is — see the question_id branch in submit_rating."""
+    from server.tests.conftest import login_as
+
+    group, progress, question_0, users = _make_group_with_members(1)
+    question_1 = Question(worksheet_id=progress.worksheet_id, order_index=1, title="Q2", prompt="p2", expected_output="1")
+    db.session.add(question_1)
+    db.session.commit()
+
+    _add_passing_shared_run(group.id, question_0.id, users[0].id)
+    db.session.add(Rating(group_id=group.id, question_id=question_0.id, user_id=users[0].id, value=5))
+    db.session.commit()
+    ok, error = advance_service.try_advance(progress, group.id, question_0.id)
+    assert ok is True, error
+    # Now on question_1; question_0 is a past, already-unlocked question.
+
+    login_as(client, users[0])
+
+    resp = client.post(
+        f"/api/groups/{group.id}/ratings",
+        json={"worksheet_id": progress.worksheet_id, "value": 2, "question_id": question_0.id},
+    )
+    assert resp.status_code == 200
+
+    rating_0 = Rating.query.filter_by(group_id=group.id, question_id=question_0.id, user_id=users[0].id).first()
+    assert rating_0 is not None
+    assert rating_0.value == 2
+    # Didn't touch the current question's rating.
+    rating_1 = Rating.query.filter_by(group_id=group.id, question_id=question_1.id, user_id=users[0].id).first()
+    assert rating_1 is None
+
+    # A locked, not-yet-reached question can't be targeted this way.
+    question_2 = Question(worksheet_id=progress.worksheet_id, order_index=2, title="Q3", prompt="p3", expected_output="1")
+    db.session.add(question_2)
+    db.session.commit()
+    resp = client.post(
+        f"/api/groups/{group.id}/ratings",
+        json={"worksheet_id": progress.worksheet_id, "value": 4, "question_id": question_2.id},
+    )
+    assert resp.status_code == 404
 
 
 def test_go_back_route_removed(app, client):
@@ -540,6 +731,84 @@ def test_advance_cannot_double_advance(app):
     stale_session.close()
 
 
+def _make_completed_assignment():
+    """Moved here from the now-deleted test_my_assignments.py (which
+    covered the removed "My Assignments"/History feature) — the
+    build_group_work / get_group_work behavior it also exercised still
+    exists (it now backs the shared Assignments page's "View work").
+    """
+    klass = Class(course_name="C")
+    db.session.add(klass)
+    db.session.flush()
+    section = Section(class_id=klass.id, name="S")
+    db.session.add(section)
+    db.session.flush()
+
+    worksheet = Worksheet(class_id=klass.id, slug="w1", title="Disc 1", is_published=True)
+    db.session.add(worksheet)
+    db.session.flush()
+    q1 = Question(worksheet_id=worksheet.id, order_index=0, title="Q1", prompt="p1")
+    q2 = Question(worksheet_id=worksheet.id, order_index=1, title="Q2", prompt="p2")
+    db.session.add_all([q1, q2])
+    db.session.flush()
+
+    student = User(display_name="Student", role="student")
+    other_member = User(display_name="Teammate", role="student")
+    db.session.add_all([student, other_member])
+    db.session.flush()
+
+    group = Group(section_id=section.id, number=1, name="G1")
+    db.session.add(group)
+    db.session.flush()
+    db.session.add(GroupMembership(group_id=group.id, user_id=student.id))
+    db.session.add(GroupMembership(group_id=group.id, user_id=other_member.id))
+    # current_question_index == total question count means "completed".
+    db.session.add(GroupAssignmentProgress(group_id=group.id, worksheet_id=worksheet.id, current_question_index=2))
+    db.session.add(Rating(group_id=group.id, question_id=q1.id, user_id=student.id, value=4))
+    db.session.add(Rating(group_id=group.id, question_id=q2.id, user_id=student.id, value=2))
+    # A teammate's rating shouldn't affect the student's own average.
+    db.session.add(Rating(group_id=group.id, question_id=q1.id, user_id=other_member.id, value=1))
+    db.session.add(
+        TestRun(
+            group_id=group.id,
+            question_id=q1.id,
+            user_id=student.id,
+            source="shared",
+            prediction_text="x",
+            code_snapshot="def f(): return 1",
+            status="done",
+            passed_count=1,
+            total_count=1,
+            results_json="{}",
+        )
+    )
+    db.session.commit()
+    return klass, section, worksheet, group, student, other_member
+
+
+def test_get_group_work_shows_submitted_code_and_pass_state(app, client, db):
+    from server.tests.conftest import login_as
+
+    _klass, _section, worksheet, group, student, _other = _make_completed_assignment()
+    outsider = User(display_name="Outsider", role="student")
+    db.session.add(outsider)
+    db.session.commit()
+
+    login_as(client, student)
+    resp = client.get(f"/api/groups/{group.id}/worksheets/{worksheet.id}/work")
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["worksheet_title"] == "Disc 1"
+    by_title = {q["title"]: q for q in body["questions"]}
+    assert by_title["Q1"]["code"] == "def f(): return 1"
+    assert by_title["Q1"]["passed"] is True
+    assert by_title["Q2"]["code"] is None  # never run
+
+    login_as(client, outsider)
+    resp = client.get(f"/api/groups/{group.id}/worksheets/{worksheet.id}/work")
+    assert resp.status_code == 403
+
+
 def test_group_routes_reject_a_worksheet_from_a_different_class(app, client):
     """A student's group belongs to exactly one class — none of the routes
     that accept a client-supplied worksheet_id should let them use it with
@@ -581,3 +850,41 @@ def test_group_routes_reject_a_worksheet_from_a_different_class(app, client):
     # every request): the group's own, same-class worksheet still works.
     resp = client.get(f"/api/groups/{group.id}/state?worksheet_id={_progress.worksheet_id}")
     assert resp.status_code == 200
+
+
+def test_run_tests_enqueues_the_predict_call_not_a_precomputed_expected(app, client, monkeypatch):
+    """The prediction quiz is graded against what the student's own code
+    actually does (server/services/compare.py:build_prediction_feedback),
+    which is only known once the sandbox runs it — so run_tests must
+    enqueue the *call* string, never a pre-baked "expected" value.
+    """
+    from server.tests.conftest import login_as
+
+    group, progress, question, users = _make_group_with_members(1)
+
+    enqueued = {}
+    monkeypatch.setattr(
+        "server.blueprints.groups.grading_queue_service.enqueue_grading_job",
+        lambda test_run_id, predict_call, student_prediction, cooldown_seconds: enqueued.update(
+            predict_call=predict_call, student_prediction=student_prediction
+        ),
+    )
+    login_as(client, users[0])
+
+    resp = client.post(
+        f"/api/groups/{group.id}/run-tests",
+        json={
+            "worksheet_id": progress.worksheet_id,
+            "source": "scratch",
+            "code": "def f(): return 1",
+            "prediction": "my guess",
+        },
+    )
+
+    assert resp.status_code == 202
+    # The fixture question's prompt has no `>>>` example, so
+    # extract_predict_examples falls back to this literal placeholder --
+    # what matters here is it's the *call*, not "42" (the question's
+    # expected_output, which the old solution-based system would have sent).
+    assert enqueued["predict_call"] == "this code"
+    assert enqueued["student_prediction"] == "my guess"

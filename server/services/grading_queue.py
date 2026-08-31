@@ -26,7 +26,7 @@ def get_queue():
     return _queue
 
 
-def enqueue_grading_job(test_run_id, prediction_feedback, cooldown_seconds):
+def enqueue_grading_job(test_run_id, predict_call, student_prediction, cooldown_seconds):
     from server.services.grading_jobs import run_grading_job
 
-    get_queue().enqueue(run_grading_job, test_run_id, prediction_feedback, cooldown_seconds)
+    get_queue().enqueue(run_grading_job, test_run_id, predict_call, student_prediction, cooldown_seconds)

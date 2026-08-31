@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import ClassFilterSelect from '../components/shared/ClassFilterSelect.jsx';
 import * as adminApi from '../api/admin.js';
 import * as sectionsApi from '../api/sections.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -10,6 +11,8 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [savingId, setSavingId] = useState(null);
+
+  const [filterClassId, setFilterClassId] = useState(null);
 
   const [rosterText, setRosterText] = useState('');
   const [importing, setImporting] = useState(false);
@@ -91,6 +94,15 @@ export default function AdminPage() {
 
   if (loading) return <div className="page-loading">Loading…</div>;
 
+  // Sections don't come with a standalone "classes" list — derive the
+  // unique set from what's already loaded rather than a second API call.
+  const classesById = new Map();
+  sections.forEach((s) => {
+    if (!classesById.has(s.class_id)) classesById.set(s.class_id, { id: s.class_id, course_name: s.course_name });
+  });
+  const classes = [...classesById.values()];
+  const visibleSections = filterClassId ? sections.filter((s) => s.class_id === filterClassId) : sections;
+
   return (
     <div>
       <div className="page-header-row">
@@ -98,6 +110,14 @@ export default function AdminPage() {
           <h1>Admin</h1>
           <p>Assign the TA who owns each class — a TA only sees and manages their own class's groups.</p>
         </div>
+        {classes.length > 1 && (
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label htmlFor="classFilter" style={{ fontSize: 12 }}>
+              Class
+            </label>
+            <ClassFilterSelect id="classFilter" classes={classes} value={filterClassId} onChange={setFilterClassId} />
+          </div>
+        )}
       </div>
 
       {error && <div className="alert alert-danger">{error}</div>}
@@ -111,7 +131,7 @@ export default function AdminPage() {
             </tr>
           </thead>
           <tbody>
-            {sections.map((s) => (
+            {visibleSections.map((s) => (
               <tr key={s.id}>
                 <td>
                   {s.course_name} · {s.name}
@@ -135,7 +155,7 @@ export default function AdminPage() {
                 </td>
               </tr>
             ))}
-            {sections.length === 0 && (
+            {visibleSections.length === 0 && (
               <tr>
                 <td colSpan={2} style={{ color: 'var(--muted)', textAlign: 'center', padding: 20 }}>
                   No classes yet.

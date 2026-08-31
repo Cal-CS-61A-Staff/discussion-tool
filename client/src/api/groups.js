@@ -8,10 +8,16 @@ export const updateScratchCode = (groupId, worksheetId, code) =>
   api.put(`/groups/${groupId}/scratch-code`, { worksheet_id: worksheetId, code });
 export const giveUpTypist = (groupId, worksheetId) =>
   api.post(`/groups/${groupId}/typist/give-up`, { worksheet_id: worksheetId });
+export const leaveGroup = (groupId, worksheetId) =>
+  api.post(`/groups/${groupId}/leave`, { worksheet_id: worksheetId });
 export const submitAttempt = (groupId, worksheetId, prediction) =>
   api.post(`/groups/${groupId}/attempts`, { worksheet_id: worksheetId, prediction });
-export const submitRating = (groupId, worksheetId, value) =>
-  api.post(`/groups/${groupId}/ratings`, { worksheet_id: worksheetId, value });
+export const submitRating = (groupId, worksheetId, value, questionId) =>
+  api.post(`/groups/${groupId}/ratings`, {
+    worksheet_id: worksheetId,
+    value,
+    ...(questionId != null ? { question_id: questionId } : {}),
+  });
 export const advanceGroup = (groupId, worksheetId) =>
   api.post(`/groups/${groupId}/advance`, { worksheet_id: worksheetId });
 export const forceAdvanceGroup = (groupId, worksheetId) =>
@@ -25,5 +31,5 @@ export const runTests = (groupId, worksheetId, code, prediction, source) =>
 export const getTestRunResult = (groupId, testRunId) => api.get(`/groups/${groupId}/run-tests/${testRunId}`);
 export const getGroupHistory = (groupId) => api.get(`/groups/${groupId}/history`);
 export const getGroupWork = (groupId, worksheetId) => api.get(`/groups/${groupId}/worksheets/${worksheetId}/work`);
-export const practiceRun = (groupId, worksheetId, questionId, code) =>
-  api.post(`/groups/${groupId}/worksheets/${worksheetId}/questions/${questionId}/practice-run`, { code });
+export const practiceRun = (groupId, worksheetId, questionId, code, prediction) =>
+  api.post(`/groups/${groupId}/worksheets/${worksheetId}/questions/${questionId}/practice-run`, { code, prediction });

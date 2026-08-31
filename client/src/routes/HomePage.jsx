@@ -1,32 +1,70 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import SectionCard from '../components/home/SectionCard.jsx';
+import CourseCard from '../components/home/CourseCard.jsx';
+import * as adminApi from '../api/admin.js';
 import * as sectionsApi from '../api/sections.js';
 import { useAuth } from '../context/AuthContext.jsx';
-import { isStaff } from '../utils/roles.js';
+import { isAdmin, isStaff } from '../utils/roles.js';
 
 export default function HomePage() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [sections, setSections] = useState([]);
+  const [classes, setClasses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    let cancelled = false;
+  const [showNewForm, setShowNewForm] = useState(false);
+  const [newCourseName, setNewCourseName] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [archivingId, setArchivingId] = useState(null);
+
+  const load = () => {
     sectionsApi
-      .listSections()
-      .then((res) => {
-        if (!cancelled) setSections(res.sections);
-      })
-      .catch((err) => !cancelled && setError(err.message))
-      .finally(() => !cancelled && setLoading(false));
-    return () => {
-      cancelled = true;
-    };
+      .listClasses()
+      .then((res) => setClasses(res.classes))
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    load();
   }, []);
 
+  const handleCreateCourse = async (e) => {
+    e.preventDefault();
+    setCreating(true);
+    setError('');
+    try {
+      await adminApi.createClass(newCourseName.trim());
+      setNewCourseName('');
+      setShowNewForm(false);
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleToggleArchive = async (course) => {
+    setArchivingId(course.id);
+    setError('');
+    try {
+      await adminApi.archiveClass(course.id, !course.is_archived);
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setArchivingId(null);
+    }
+  };
+
+  const viewCourse = (course) => navigate(`/assignments?classId=${course.id}`);
+
   if (loading) return <div className="page-loading">Loading…</div>;
+
+  const activeClasses = classes.filter((c) => !c.is_archived);
+  const pastClasses = classes.filter((c) => c.is_archived);
 
   return (
     <div>
@@ -35,23 +73,85 @@ export default function HomePage() {
           <h1>CS 61A Discussion</h1>
           <p>
             Welcome, {user.display_name}.{' '}
-            {isStaff(user)
-              ? 'Pick a class below to manage its assignments and groups.'
-              : 'Pick your class below to see its assignments.'}
+            {isStaff(user) ? 'Pick a class below to manage its assignments and groups.' : 'Pick your class below to see its assignments.'}
           </p>
         </div>
       </div>
 
+      {error && <div className="alert alert-danger">{error}</div>}
+
       <div className="page-header-row">
-        <h1>Classes</h1>
+        <h1>Active Courses</h1>
       </div>
-      {error && <div className="alert alert-danger">Couldn&apos;t load your classes: {error}</div>}
       <div className="card-holder">
-        {sections.map((s) => (
-          <SectionCard key={s.id} section={s} onClick={() => navigate(`/classes/${s.id}`)} />
+        {isAdmin(user) &&
+          (showNewForm ? (
+            <div className="panel">
+              <div className="panel-body">
+                <form onSubmit={handleCreateCourse}>
+                  <div className="form-group">
+                    <label htmlFor="newCourseName">Course name</label>
+                    <input
+                      id="newCourseName"
+                      className="form-control"
+                      value={newCourseName}
+                      onChange={(e) => setNewCourseName(e.target.value)}
+                      placeholder="e.g. CS 61A"
+                      required
+                      autoFocus
+                    />
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn btn-primary btn-sm" type="submit" disabled={creating}>
+                      {creating ? 'Creating…' : 'Create course'}
+                    </button>
+                    <button className="btn btn-sm" type="button" onClick={() => setShowNewForm(false)}>
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          ) : (
+            <button type="button" className="course-card-create" onClick={() => setShowNewForm(true)}>
+              <span className="course-card-create-plus">+</span>
+              Create a New Course
+            </button>
+          ))}
+        {activeClasses.map((c) => (
+          <CourseCard
+            key={c.id}
+            course={c}
+            onClick={() => viewCourse(c)}
+            isAdmin={isAdmin(user)}
+            onToggleArchive={() => handleToggleArchive(c)}
+            archiving={archivingId === c.id}
+          />
         ))}
-        {!error && sections.length === 0 && <p style={{ color: 'var(--muted)' }}>No classes yet.</p>}
+        {activeClasses.length === 0 && !isAdmin(user) && (
+          <p style={{ color: 'var(--muted)' }}>No active classes yet.</p>
+        )}
       </div>
+
+      {pastClasses.length > 0 && (
+        <>
+          <div className="page-header-row" style={{ marginTop: 32 }}>
+            <h1>Past Courses</h1>
+          </div>
+          <div className="card-holder">
+            {pastClasses.map((c) => (
+              <CourseCard
+                key={c.id}
+                course={c}
+                onClick={() => viewCourse(c)}
+                isAdmin={isAdmin(user)}
+                onToggleArchive={() => handleToggleArchive(c)}
+                archiving={archivingId === c.id}
+              />
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

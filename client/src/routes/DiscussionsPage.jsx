@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import ClassFilterSelect from '../components/shared/ClassFilterSelect.jsx';
 import * as adminApi from '../api/admin.js';
 import * as sectionsApi from '../api/sections.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -13,6 +14,7 @@ export default function DiscussionsPage() {
   const [classes, setClasses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [filterClassId, setFilterClassId] = useState(null);
 
   const [showNewForm, setShowNewForm] = useState(false);
   const [newClassName, setNewClassName] = useState('');
@@ -63,6 +65,14 @@ export default function DiscussionsPage() {
           <h1>Discussions</h1>
           <p>{isAdmin ? 'Every class — click one to manage its sections.' : 'Classes you teach or co-teach in.'}</p>
         </div>
+        {classes.length > 1 && (
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label htmlFor="classFilter" style={{ fontSize: 12 }}>
+              Class
+            </label>
+            <ClassFilterSelect id="classFilter" classes={classes} value={filterClassId} onChange={setFilterClassId} />
+          </div>
+        )}
       </div>
 
       {error && <div className="alert alert-danger">{error}</div>}
@@ -76,7 +86,7 @@ export default function DiscussionsPage() {
             </tr>
           </thead>
           <tbody>
-            {classes.map((c) => (
+            {classes.filter((c) => !filterClassId || c.id === filterClassId).map((c) => (
               <tr key={c.id}>
                 <td>
                   <a

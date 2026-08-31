@@ -11,16 +11,15 @@ import { AuthProvider, useAuth } from './context/AuthContext.jsx';
 const AdminPage = lazy(() => import('./routes/AdminPage.jsx'));
 const AssignmentPage = lazy(() => import('./routes/AssignmentPage.jsx'));
 const AssignmentsPage = lazy(() => import('./routes/AssignmentsPage.jsx'));
-const ClassPage = lazy(() => import('./routes/ClassPage.jsx'));
 const ClassSectionsPage = lazy(() => import('./routes/ClassSectionsPage.jsx'));
 const DiscussionsPage = lazy(() => import('./routes/DiscussionsPage.jsx'));
-const HistoryPage = lazy(() => import('./routes/HistoryPage.jsx'));
 const HomePage = lazy(() => import('./routes/HomePage.jsx'));
 const LoginPage = lazy(() => import('./routes/LoginPage.jsx'));
 const StudentWorksheetPage = lazy(() => import('./routes/StudentWorksheetPage.jsx'));
 const TaAssignmentEditorPage = lazy(() => import('./routes/TaAssignmentEditorPage.jsx'));
 const TaDashboardPage = lazy(() => import('./routes/TaDashboardPage.jsx'));
 const TaGradesPage = lazy(() => import('./routes/TaGradesPage.jsx'));
+const WorkBrowserPage = lazy(() => import('./routes/WorkBrowserPage.jsx'));
 
 function RequireAuth({ children }) {
   const { user, loading } = useAuth();
@@ -38,14 +37,6 @@ function AppRoutes() {
         element={
           <RequireAuth>
             <HomePage />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/classes/:sectionId"
-        element={
-          <RequireAuth>
-            <ClassPage />
           </RequireAuth>
         }
       />
@@ -70,14 +61,6 @@ function AppRoutes() {
         element={
           <RequireAuth>
             <ClassSectionsPage />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/history"
-        element={
-          <RequireAuth>
-            <HistoryPage />
           </RequireAuth>
         }
       />
@@ -126,6 +109,14 @@ function AppRoutes() {
         element={
           <RequireAuth>
             <StudentWorksheetPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/groups/:groupId/worksheets/:worksheetId/work"
+        element={
+          <RequireAuth>
+            <WorkBrowserPage />
           </RequireAuth>
         }
       />

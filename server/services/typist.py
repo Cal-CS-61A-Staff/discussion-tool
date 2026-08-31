@@ -94,3 +94,22 @@ def release_typist(progress, group_id):
     trusted to make this call unconditionally.
     """
     assign_random_typist(progress, group_id)
+
+
+def leave(progress, group_id, user_id):
+    """Explicit "I'm navigating away" signal (StudentWorksheetPage gives
+    this up on unmount for in-app navigation — not reliable for a closed
+    tab/refresh, which still falls back to reassign_if_stale's timeout).
+    Marks the user inactive immediately instead of waiting out
+    TYPIST_STALE_SECONDS of missed polls, and hands off the pen right away
+    if they were the one holding it.
+    """
+    stale_at = utcnow() - timedelta(seconds=Config.TYPIST_STALE_SECONDS + 1)
+    db.session.execute(
+        update(GroupMembership)
+        .where(GroupMembership.group_id == group_id, GroupMembership.user_id == user_id)
+        .values(last_seen_at=stale_at)
+    )
+    db.session.commit()
+    if progress.typist_user_id == user_id:
+        assign_random_typist(progress, group_id, exclude_user_id=user_id)

@@ -16,3 +16,6 @@ class Class(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     course_name = db.Column(db.String(40), nullable=False)
     created_at = db.Column(db.DateTime, default=utcnow)
+    # TA/admin-toggled (not inferred from dates — there's no term/semester
+    # concept in this app) — drives the Home page's Active/Past split.
+    is_archived = db.Column(db.Boolean, default=False, nullable=False)

@@ -21,17 +21,12 @@ export default function Navbar() {
           <NavLink to="/" className={({ isActive }) => (isActive ? 'active' : '')} end>
             Home
           </NavLink>
-          {user && (
-            <NavLink to="/history" className={({ isActive }) => (isActive ? 'active' : '')}>
-              History
-            </NavLink>
-          )}
           {isStaff(user) && (
             <NavLink to="/discussions" className={({ isActive }) => (isActive ? 'active' : '')}>
               Manage groups
             </NavLink>
           )}
-          {isStaff(user) && (
+          {user && (
             <NavLink to="/assignments" className={({ isActive }) => (isActive ? 'active' : '')}>
               Assignments
             </NavLink>

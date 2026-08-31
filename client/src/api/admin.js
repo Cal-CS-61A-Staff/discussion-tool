@@ -24,3 +24,4 @@ export const importEnrollmentRoster = (csv) => api.post('/roster/import-enrollme
 
 export const createClass = (courseName) => api.post('/classes', { course_name: courseName });
 export const deleteClass = (classId) => api.delete(`/classes/${classId}`);
+export const archiveClass = (classId, isArchived) => api.put(`/classes/${classId}/archive`, { is_archived: isArchived });

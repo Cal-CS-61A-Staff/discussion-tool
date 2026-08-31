@@ -85,22 +85,24 @@ def try_advance(progress, group_id, question_id, force=False):
     """Advance `progress` (a GroupAssignmentProgress row) to the next
     question if the group is ready (see ready_to_advance).
 
-    `force=True` skips both readiness checks — the student-side escape
+    `force=True` skips only the ratings check — the student-side escape
     hatch (POST .../advance/force in server/blueprints/groups.py) for a
-    group stuck on a member who'll never rate/pass (crashed, dropped the
-    class); any member can trigger it after a confirm-are-you-sure step in
-    the UI, since requiring unanimous agreement would defeat the point of
-    an escape hatch for exactly the case where unanimity is unreachable.
-    The advance itself still goes through the same guarded UPDATE...WHERE
-    below, so a double-advance race is still impossible either way.
+    group stuck on a member who'll never rate (crashed, dropped the class);
+    any member can trigger it after a confirm-are-you-sure step in the UI,
+    since requiring unanimous agreement would defeat the point of an escape
+    hatch for exactly the case where unanimity is unreachable. It does NOT
+    skip the passing-run check — forcing past a question nobody's actually
+    solved isn't an escape hatch, it's just skipping the assignment, so
+    that requirement always holds regardless of `force`. The advance itself
+    still goes through the same guarded UPDATE...WHERE below, so a
+    double-advance race is still impossible either way.
 
     Returns (success, error_message_or_None).
     """
-    if not force:
-        if not all_members_rated(group_id, question_id):
-            return False, "not everyone has rated this question yet"
-        if not has_passing_shared_run(group_id, question_id):
-            return False, "the group hasn't passed the tests (and correctly predicted the output) yet"
+    if not force and not all_members_rated(group_id, question_id):
+        return False, "not everyone has rated this question yet"
+    if not has_passing_shared_run(group_id, question_id):
+        return False, "the group hasn't passed the tests (and correctly predicted the output) yet"
 
     expected_index = progress.current_question_index
     result = db.session.execute(

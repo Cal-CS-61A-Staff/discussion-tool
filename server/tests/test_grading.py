@@ -226,3 +226,40 @@ def test_doctest_mode_exception_reports_failure_not_crash(doctest_question):
     assert result["total_count"] == 2
     assert all(not t["passed"] and t["message"] for t in result["test_results"])
     assert "RuntimeError" in result["test_results"][0]["message"]
+
+
+def test_predict_call_evaluates_against_the_students_own_code(question):
+    """The prediction quiz grades what the student's own code actually
+    does, not a reference solution — server/services/compare.py:
+    build_prediction_feedback, grader/harness/runner.py:
+    _evaluate_predict_call."""
+    code = "def tree_sum(t):\n    return t.label + sum([tree_sum(b) for b in t.branches])\n"
+    result = grading.run_grader(question, code, predict_call="tree_sum(Tree(5))")
+    assert result["predict_result"] == {"kind": "value", "repr": "5"}
+
+
+def test_predict_call_reports_function_kind_without_a_raw_repr(question):
+    code = "def tree_sum(t):\n    return tree_sum\n"
+    result = grading.run_grader(question, code, predict_call="tree_sum(Tree(5))")
+    assert result["predict_result"] == {"kind": "function"}
+
+
+def test_predict_call_captures_a_real_traceback_when_the_call_itself_raises(question):
+    code = "def tree_sum(t):\n    raise ValueError('bug in my code')\n"
+    result = grading.run_grader(question, code, predict_call="tree_sum(Tree(5))")
+    assert result["predict_result"]["kind"] == "error"
+    assert "ValueError: bug in my code" in result["predict_result"]["traceback"]
+
+
+def test_predict_call_still_reports_error_when_the_students_code_wont_even_load(question):
+    code = "this is not valid python("
+    result = grading.run_grader(question, code, predict_call="tree_sum(Tree(5))")
+    assert result["error"] is not None
+    assert result["predict_result"]["kind"] == "error"
+    assert "SyntaxError" in result["predict_result"]["traceback"]
+
+
+def test_no_predict_call_means_no_predict_result(question):
+    code = "def tree_sum(t):\n    return t.label + sum([tree_sum(b) for b in t.branches])\n"
+    result = grading.run_grader(question, code)
+    assert result["predict_result"] is None
