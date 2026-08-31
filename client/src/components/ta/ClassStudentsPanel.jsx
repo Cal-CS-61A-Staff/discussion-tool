@@ -104,7 +104,6 @@ export default function ClassStudentsPanel({ classId }) {
                 <tr>
                   <th>Name</th>
                   <th>Email</th>
-                  <th>Status</th>
                   <th />
                 </tr>
               </thead>
@@ -113,9 +112,6 @@ export default function ClassStudentsPanel({ classId }) {
                   <tr key={s.email}>
                     <td>{s.name || <span style={{ color: 'var(--muted)' }}>—</span>}</td>
                     <td>{s.email}</td>
-                    <td style={{ color: 'var(--muted)', fontSize: 13 }}>
-                      {s.in_group ? 'in a group' : s.has_account ? 'signed in, no group' : 'not signed in yet'}
-                    </td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       <a
                         href="/"

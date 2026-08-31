@@ -59,8 +59,7 @@ def list_sections():
 @role_required("ta")
 def list_class_students(class_id):
     """The course roster (ClassEnrollment) for any TA/co-teacher on the
-    class, or an admin. Each row is annotated with whether an account
-    exists for that email yet and whether they've joined a group here."""
+    class, or an admin — email plus the display name if an account exists."""
     klass = Class.query.get_or_404(class_id)
     error = require_class_access(get_current_user(), klass)
     if error:
@@ -70,31 +69,12 @@ def list_class_students(class_id):
         ClassEnrollment.query.filter_by(class_id=class_id).order_by(ClassEnrollment.student_email).all()
     )
     emails = [e.student_email for e in enrollments]
-    users = (
-        {u.email.lower(): u for u in User.query.filter(func.lower(User.email).in_(emails)).all()}
+    names = (
+        {u.email.lower(): u.display_name for u in User.query.filter(func.lower(User.email).in_(emails)).all()}
         if emails
         else {}
     )
-    in_group = {
-        (row[0] or "").lower()
-        for row in db.session.query(User.email)
-        .join(GroupMembership, GroupMembership.user_id == User.id)
-        .join(Group, Group.id == GroupMembership.group_id)
-        .join(Section, Section.id == Group.section_id)
-        .filter(Section.class_id == class_id, Group.is_individual.is_(False), User.email.isnot(None))
-        .all()
-    }
-    students = []
-    for e in enrollments:
-        u = users.get(e.student_email)
-        students.append(
-            {
-                "email": e.student_email,
-                "name": u.display_name if u else None,
-                "has_account": u is not None,
-                "in_group": e.student_email in in_group,
-            }
-        )
+    students = [{"email": e.student_email, "name": names.get(e.student_email)} for e in enrollments]
     return jsonify(students=students)
 
 

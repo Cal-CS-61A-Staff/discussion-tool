@@ -45,7 +45,7 @@ def test_ta_on_class_can_add_and_remove_students(app, client):
 
     listed = client.get(f"/api/classes/{cid}/students").get_json()["students"]
     assert listed[0]["email"] == "stu@berkeley.edu"
-    assert listed[0]["has_account"] is True and listed[0]["in_group"] is False
+    assert listed[0]["name"] == "Stu"
 
     resp = client.delete(f"/api/classes/{cid}/students", json={"email": "stu@berkeley.edu"})
     assert resp.status_code == 200
