@@ -11,6 +11,16 @@ class Config:
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SESSION_COOKIE_SAMESITE = "Lax"
+    # Neon (our Postgres host) drops idle server-side connections well
+    # under any reasonable pool_recycle default — a gunicorn worker that's
+    # sat idle for a few minutes gets "SSL connection has been closed
+    # unexpectedly" on its first query back, which SQLAlchemy surfaces as a
+    # 500 instead of quietly reconnecting. pool_pre_ping does a cheap
+    # SELECT 1 before handing out a pooled connection and transparently
+    # replaces it if that fails; pool_recycle proactively retires
+    # connections before Neon's own idle timeout gets to them so pre_ping
+    # rarely even has to catch a dead one.
+    SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True, "pool_recycle": 280}
 
     # Group-wide cooldown after a run attempt, in seconds.
     COOLDOWN_SECONDS = 30
