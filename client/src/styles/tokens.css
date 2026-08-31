@@ -324,6 +324,11 @@ a:hover {
   grid-gap: 14px;
 }
 
+.course-card {
+  height: 140px;
+  display: flex;
+  flex-direction: column;
+}
 .course-card-heading {
   padding: 16px 14px;
   background: var(--brand);
@@ -333,13 +338,18 @@ a:hover {
   margin: 0;
   font-size: 16px;
 }
+.course-card .panel-body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
 .course-card-create {
   display: flex;
   align-items: center;
   justify-content: center;
   flex-direction: column;
   gap: 8px;
-  min-height: 100px;
+  height: 140px;
   border: 2px dashed var(--border);
   border-radius: var(--radius-lg);
   background: transparent;
