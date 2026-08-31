@@ -105,6 +105,10 @@ def parse_question_markdown(path):
         "setup_code": "",
         "test_code": "",
         "grading_mode": grading_mode,
+        # git-authored content is code-only for now; non-code problem types
+        # are created through the guided TA form.
+        "problem_type": frontmatter.get("type", "coding"),
+        "content_json": None,
         "solution_markdown": solution_markdown,
     }
 

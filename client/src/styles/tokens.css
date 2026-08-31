@@ -423,6 +423,7 @@ a:hover {
   font-weight: bold;
   color: #fff;
   background: var(--muted-light);
+  white-space: nowrap;
 }
 .badge-danger {
   background: #d9534f;

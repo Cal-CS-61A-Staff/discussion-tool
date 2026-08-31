@@ -8,12 +8,14 @@ from server.config import Config
 from server.extensions import db
 from server.models.attempt import Attempt
 from server.models.group import Group, GroupAssignmentProgress, GroupMembership, GroupQuestionState, ScratchCode
+from server.models.question_response import QuestionResponse
 from server.models.rating import Rating
 from server.models.test_run import TestRun
 from server.models.worksheet import Question, Worksheet
 from server.services import advance as advance_service
 from server.services import cooldown as cooldown_service
 from server.services import grader_cooldown as grader_cooldown_service
+from server.services import response_grading
 from server.services.predict_examples import extract_predict_examples_for_question
 from server.utils import utcnow
 
@@ -26,6 +28,19 @@ def current_question(worksheet_id, current_question_index):
 
 def total_questions_for_worksheet(worksheet_id):
     return Question.query.filter_by(worksheet_id=worksheet_id).count()
+
+
+def _group_response(group_id, question_id):
+    """(parsed_answer_or_None, is_correct_or_None) for a group's shared
+    answer to a non-code question."""
+    row = QuestionResponse.query.filter_by(group_id=group_id, question_id=question_id).first()
+    if row is None:
+        return None, None
+    try:
+        answer = json.loads(row.response_json) if row.response_json else None
+    except (ValueError, TypeError):
+        answer = None
+    return answer, row.is_correct
 
 
 def build_group_state(group, progress, user, state):
@@ -120,6 +135,8 @@ def build_group_state(group, progress, user, state):
         if last_shared_run is not None:
             last_shared_run["by"] = last_shared_run_row.user.display_name
 
+    group_answer, group_answer_correct = _group_response(group.id, question.id)
+
     return {
         "group": {
             "id": group.id,
@@ -136,6 +153,11 @@ def build_group_state(group, progress, user, state):
             "starter_code": question.starter_code,
             "language": question.language,
             "grading_mode": question.grading_mode,
+            # 'coding' behaves exactly as before; other values drive a
+            # non-code answer widget on the client. `content` here is the
+            # answer-stripped public view (see response_grading).
+            "problem_type": question.problem_type or "coding",
+            "content": response_grading.public_content(question),
             # expected_output is deliberately withheld here (only surfaces
             # in last_attempt once someone has actually run it) — the same
             # hygiene now applies to solution_markdown (never included in
@@ -161,6 +183,9 @@ def build_group_state(group, progress, user, state):
         "my_rating_value": my_rating,
         "last_attempt": last_attempt,
         "last_shared_run": last_shared_run,
+        # The group's shared answer to a non-code question (null for coding).
+        "group_response": group_answer,
+        "group_response_correct": group_answer_correct,
         "all_rated": advance_service.all_members_rated(group.id, question.id),
         "has_passing_run": advance_service.has_passing_shared_run(group.id, question.id),
         "ready_to_advance": advance_service.ready_to_advance(group.id, question.id),
@@ -185,6 +210,7 @@ def build_group_detail(group, progress, state):
         }
 
     code = state.code if state is not None else (question.starter_code or "")
+    ta_group_answer, ta_group_answer_correct = _group_response(group.id, question.id)
 
     members = GroupMembership.query.options(joinedload(GroupMembership.user)).filter_by(group_id=group.id).all()
     ratings_by_user = {
@@ -233,7 +259,16 @@ def build_group_detail(group, progress, state):
             "expected_output": question.expected_output,
             "language": question.language,
             "grading_mode": question.grading_mode,
+            # TA view — full content incl. answers, plus the group's answer.
+            "problem_type": question.problem_type or "coding",
+            "content": (
+                response_grading.parse_content(question)
+                if (question.problem_type or "coding") != "coding"
+                else None
+            ),
         },
+        "group_response": ta_group_answer,
+        "group_response_correct": ta_group_answer_correct,
         "total_questions": total_questions_for_worksheet(progress.worksheet_id),
         "code": code,
         "members": member_payload,
@@ -495,6 +530,7 @@ def build_group_work(group, worksheet_id, user):
         )
         scratch = ScratchCode.query.filter_by(group_id=group.id, question_id=question.id, user_id=user.id).first()
         rating = Rating.query.filter_by(group_id=group.id, question_id=question.id, user_id=user.id).first()
+        group_answer, group_answer_correct = _group_response(group.id, question.id)
         payload.append(
             {
                 "question_id": question.id,
@@ -502,6 +538,10 @@ def build_group_work(group, worksheet_id, user):
                 "title": question.title,
                 "prompt": question.prompt,
                 "grading_mode": question.grading_mode,
+                "problem_type": question.problem_type or "coding",
+                "content": response_grading.public_content(question),
+                "group_response": group_answer,
+                "group_response_correct": group_answer_correct,
                 "code": latest_run.code_snapshot if latest_run else None,
                 "starter_code": question.starter_code or "",
                 "passed": advance_service.has_ever_passed_tests(group.id, question.id),

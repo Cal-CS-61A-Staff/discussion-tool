@@ -3,6 +3,7 @@ import CodeEditor from './CodeEditor.jsx';
 import ConfidenceScale from './ConfidenceScale.jsx';
 import GraderFeedbackPanel from './GraderFeedbackPanel.jsx';
 import MarkdownContent from './MarkdownContent.jsx';
+import ProblemWidget from './ProblemWidget.jsx';
 import TestResultsPanel from './TestResultsPanel.jsx';
 import * as groupsApi from '../../api/groups.js';
 import { usePracticeRunner } from '../../hooks/usePracticeRunner.js';
@@ -97,6 +98,24 @@ function PracticeCodeBlock({ groupId, worksheetId, questionId, initialCode, pred
 export default function PracticeQuestion({ groupId, worksheetId, question, showPrompt }) {
   const [ratingValue, setRatingValue] = useState(question.my_rating ?? null);
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
+  const [responseSubmitting, setResponseSubmitting] = useState(false);
+  const [response, setResponse] = useState(question.group_response ?? null);
+  const [responseCorrect, setResponseCorrect] = useState(question.group_response_correct ?? null);
+
+  const isCoding = (question.problem_type || 'coding') === 'coding';
+
+  const handleSubmitResponse = async (value) => {
+    setResponseSubmitting(true);
+    try {
+      const res = await groupsApi.submitResponse(groupId, worksheetId, question.question_id, value);
+      setResponse(value);
+      setResponseCorrect(res.is_correct ?? null);
+    } catch {
+      // Best-effort — reviewing a past question doesn't gate anything.
+    } finally {
+      setResponseSubmitting(false);
+    }
+  };
 
   const handleRate = async (value) => {
     setRatingSubmitting(true);
@@ -115,12 +134,32 @@ export default function PracticeQuestion({ groupId, worksheetId, question, showP
     <div style={{ marginBottom: 16 }}>
       <div className="q-label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span>{question.title}</span>
-        <span className={`badge ${question.passed ? 'badge-success' : 'badge-default'}`}>
-          {question.passed ? '✓ passed' : question.code ? 'not passing' : 'not attempted'}
+        <span className={`badge ${question.passed || responseCorrect ? 'badge-success' : 'badge-default'}`}>
+          {!isCoding
+            ? responseCorrect
+              ? '✓ correct'
+              : response != null
+                ? 'answered'
+                : 'not answered'
+            : question.passed
+              ? '✓ passed'
+              : question.code
+                ? 'not passing'
+                : 'not attempted'}
         </span>
       </div>
       {showPrompt && <MarkdownContent content={question.prompt} />}
-      {question.grading_mode !== 'discussion' && (
+      {!isCoding && (
+        <ProblemWidget
+          problemType={question.problem_type}
+          content={question.content}
+          response={response}
+          responseCorrect={responseCorrect}
+          onSubmit={handleSubmitResponse}
+          submitting={responseSubmitting}
+        />
+      )}
+      {isCoding && question.grading_mode !== 'discussion' && (
         <PracticeCodeBlock
           groupId={groupId}
           worksheetId={worksheetId}

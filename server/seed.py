@@ -79,6 +79,8 @@ def _upsert_worksheet(data):
         question.setup_code = q.get("setup_code", "")
         question.test_code = q.get("test_code", "")
         question.grading_mode = q.get("grading_mode", "pltest")
+        question.problem_type = q.get("problem_type", "coding")
+        question.content_json = q.get("content_json")
         question.solution_markdown = q.get("solution_markdown")
 
     db.session.commit()

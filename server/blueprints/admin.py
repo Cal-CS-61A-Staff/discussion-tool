@@ -16,6 +16,7 @@ from server.extensions import db
 from server.models.attempt import Attempt
 from server.models.group import Group, GroupAssignmentProgress, GroupMembership, GroupQuestionState
 from server.models.klass import Class
+from server.models.question_response import QuestionResponse
 from server.models.rating import Rating
 from server.models.section import Section, SectionCoTeacher, SectionEnrollment
 from server.models.test_run import TestRun
@@ -23,6 +24,7 @@ from server.models.user import User
 from server.models.worksheet import Question, Worksheet
 from server.services import advance as advance_service
 from server.services import grading as grading_service
+from server.services import response_grading
 from server.services.roster_import import find_user_by_email, import_enrollment_roster, import_ta_roster
 from server.services.test_case_grading import generate_simple_test_code
 
@@ -546,6 +548,23 @@ def delete_worksheet(worksheet_id):
 
 GRADING_MODES = ("simple", "doctest", "pltest", "discussion")
 
+# 'coding' is the historic code-editor + autograder question (grading_mode
+# picks the harness path). Everything else is a non-code answer/content
+# widget authored via the same guided form; see
+# server/services/response_grading.py for each type's content schema.
+PROBLEM_TYPES = (
+    "coding",
+    "multiple_choice",
+    "dropdown",
+    "fill_blank_code",
+    "fill_blank_markdown",
+    "short_answer",
+    "text_markdown",
+    "plain_text",
+    "image",
+    "iframe",
+)
+
 
 def _validate_reference_solution(grading_mode, setup_code, test_code, reference_solution):
     """Runs `reference_solution` through the real sandboxed grader against
@@ -597,11 +616,35 @@ def _question_fields_from_request(data):
     """
     title = (data.get("title") or "").strip()
     prompt = (data.get("prompt") or "").strip()
+    problem_type = data.get("problem_type") or "coding"
     grading_mode = data.get("grading_mode") or "simple"
     solution_markdown = (data.get("solution_markdown") or "").strip() or None
 
     if not title or not prompt:
         return None, (jsonify(error="title and prompt are required"), 400)
+    if problem_type not in PROBLEM_TYPES:
+        return None, (jsonify(error=f"problem_type must be one of: {', '.join(PROBLEM_TYPES)}"), 400)
+
+    if problem_type != "coding":
+        clean_content, content_error = response_grading.validate_content(problem_type, data.get("content") or {})
+        if content_error:
+            return None, (jsonify(error=content_error), 400)
+        return {
+            "title": title,
+            "prompt": prompt,
+            # grading_mode forced to 'discussion' so the code/grader guards
+            # throughout the server naturally skip non-code questions.
+            "grading_mode": "discussion",
+            "problem_type": problem_type,
+            "content_json": json.dumps(clean_content),
+            "starter_code": "",
+            "setup_code": "",
+            "reference_solution": None,
+            "test_cases": None,
+            "test_code": "",
+            "solution_markdown": solution_markdown,
+        }, None
+
     if grading_mode not in GRADING_MODES:
         return None, (jsonify(error=f"grading_mode must be one of: {', '.join(GRADING_MODES)}"), 400)
 
@@ -610,6 +653,8 @@ def _question_fields_from_request(data):
             "title": title,
             "prompt": prompt,
             "grading_mode": grading_mode,
+            "problem_type": "coding",
+            "content_json": None,
             "starter_code": "",
             "setup_code": "",
             "reference_solution": None,
@@ -643,6 +688,8 @@ def _question_fields_from_request(data):
         "title": title,
         "prompt": prompt,
         "grading_mode": grading_mode,
+        "problem_type": "coding",
+        "content_json": None,
         "starter_code": starter_code,
         "reference_solution": reference_solution,
         "setup_code": setup_code,
@@ -702,6 +749,8 @@ def create_question(worksheet_id):
         setup_code=fields["setup_code"],
         test_code=test_code,
         grading_mode=fields["grading_mode"],
+        problem_type=fields["problem_type"],
+        content_json=fields["content_json"],
         test_cases_json=json.dumps(fields["test_cases"]) if fields["test_cases"] is not None else None,
         reference_solution=fields["reference_solution"],
     )
@@ -745,6 +794,8 @@ def update_question(question_id):
     question.setup_code = fields["setup_code"]
     question.test_code = test_code
     question.grading_mode = fields["grading_mode"]
+    question.problem_type = fields["problem_type"]
+    question.content_json = fields["content_json"]
     question.test_cases_json = json.dumps(fields["test_cases"]) if fields["test_cases"] is not None else None
     question.reference_solution = fields["reference_solution"]
     db.session.commit()
@@ -863,6 +914,19 @@ def worksheet_grades(worksheet_id):
         questions_attempted = 0
         questions_passed = 0
         for question in questions:
+            if (question.problem_type or "coding") != "coding":
+                # Non-code questions have no TestRun — a stored group answer
+                # is the "attempt", and has_ever_passed_tests knows how to
+                # score it (a correct answer for auto-checkable types).
+                response = QuestionResponse.query.filter_by(
+                    group_id=group.id, question_id=question.id
+                ).first()
+                if response is None:
+                    continue
+                questions_attempted += 1
+                if advance_service.has_ever_passed_tests(group.id, question.id):
+                    questions_passed += 1
+                continue
             latest_run = (
                 TestRun.query.filter_by(group_id=group.id, question_id=question.id, source="shared")
                 .order_by(TestRun.created_at.desc())
@@ -918,6 +982,10 @@ def _serialize_question_detail(question):
         "setup_code": question.setup_code,
         "expected_output": question.expected_output,
         "grading_mode": question.grading_mode,
+        # TA editor payload — full content incl. answers (a TA is trusted
+        # with them, unlike the student /state payload).
+        "problem_type": question.problem_type or "coding",
+        "content": response_grading.parse_content(question) if (question.problem_type or "coding") != "coding" else None,
         "test_cases": test_cases,
         "test_code": question.test_code,
         "reference_solution": question.reference_solution,

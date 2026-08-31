@@ -7,6 +7,7 @@ from server.auth import get_current_user, login_required, require_section_access
 from server.extensions import db
 from server.models.attempt import Attempt
 from server.models.group import Group, GroupAssignmentProgress, GroupMembership, GroupQuestionState, ScratchCode
+from server.models.question_response import QuestionResponse
 from server.models.rating import Rating
 from server.models.test_run import TestRun
 from server.models.worksheet import Question, Worksheet
@@ -15,6 +16,7 @@ from server.services import compare as compare_service
 from server.services import cooldown as cooldown_service
 from server.services import grader_cooldown as grader_cooldown_service
 from server.services import grading_queue as grading_queue_service
+from server.services import response_grading
 from server.services import serializers
 from server.services import typist as typist_service
 from server.services.predict_examples import extract_predict_examples_for_question
@@ -503,6 +505,55 @@ def submit_rating(group_id):
     db.session.commit()
 
     return jsonify(ok=True)
+
+
+@groups_bp.post("/<int:group_id>/worksheets/<int:worksheet_id>/questions/<int:question_id>/response")
+@login_required
+def submit_response(group_id, worksheet_id, question_id):
+    """The group's shared answer to a non-code question (multiple choice,
+    dropdown, fill-in-the-blank, short answer, plain text). One row per
+    (group, question) — any member submits or edits it, last write wins,
+    mirroring the shared code editor. For auto-checkable types a correct
+    answer here is what gates advancing (server/services/advance.py).
+    """
+    group = _load_group(group_id)
+    if group is None:
+        return jsonify(error="group not found"), 404
+
+    user = get_current_user()
+    if _membership(group_id, user.id) is None:
+        return jsonify(error="not a member of this group"), 403
+
+    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    if error:
+        return error
+
+    question = Question.query.filter_by(id=question_id, worksheet_id=worksheet_id).first()
+    if question is None:
+        return jsonify(error="question not found"), 404
+    if (question.problem_type or "coding") == "coding":
+        return jsonify(error="this question is answered with code, not a response"), 400
+
+    progress = GroupAssignmentProgress.query.filter_by(group_id=group_id, worksheet_id=worksheet_id).first()
+    unlocked_index = progress.current_question_index if progress is not None else 0
+    if question.order_index > unlocked_index:
+        return jsonify(error="this question hasn't been unlocked yet"), 403
+
+    data = request.get_json(silent=True) or {}
+    response = data.get("response")
+    is_correct = response_grading.check_response(question, response)
+
+    row = QuestionResponse.query.filter_by(group_id=group.id, question_id=question.id).first()
+    if row is None:
+        row = QuestionResponse(group_id=group.id, question_id=question.id)
+        db.session.add(row)
+    row.user_id = user.id
+    row.response_json = json.dumps(response)
+    row.is_correct = is_correct
+    row.created_at = utcnow()
+    db.session.commit()
+
+    return jsonify(ok=True, is_correct=is_correct)
 
 
 @groups_bp.post("/<int:group_id>/advance")

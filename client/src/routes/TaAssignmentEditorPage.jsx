@@ -2,9 +2,40 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import CodeEditor from '../components/student/CodeEditor.jsx';
 import MarkdownContent from '../components/student/MarkdownContent.jsx';
+import ProblemWidget from '../components/student/ProblemWidget.jsx';
+import ProblemTypeEditor, { PROBLEM_TYPE_DEFAULT_CONTENT } from '../components/ta/ProblemTypeEditor.jsx';
 import * as adminApi from '../api/admin.js';
 
 const NEW_SLIDE_ID = 'new';
+
+// 'coding' keeps the historic code-editor + autograder flow (grading_mode
+// below). Every other value is a non-code answer/content widget — see
+// server/services/response_grading.py for each one's config schema.
+const PROBLEM_TYPE_OPTIONS = [
+  { value: 'coding', label: 'Coding (autograded)' },
+  { value: 'multiple_choice', label: 'Multiple Choice' },
+  { value: 'fill_blank_code', label: 'Fill in the Blank (Coding)' },
+  { value: 'fill_blank_markdown', label: 'Fill in the Blank (Markdown)' },
+  { value: 'short_answer', label: 'Short Answer' },
+  { value: 'text_markdown', label: 'Text (Markdown)' },
+  { value: 'image', label: 'Image' },
+  { value: 'dropdown', label: 'Dropdown' },
+  { value: 'plain_text', label: 'Plain Text Box' },
+  { value: 'iframe', label: 'Iframe' },
+];
+
+const PROBLEM_TYPE_SHORT_LABELS = {
+  coding: 'Coding',
+  multiple_choice: 'Multiple choice',
+  fill_blank_code: 'Fill blank (code)',
+  fill_blank_markdown: 'Fill blank (md)',
+  short_answer: 'Short answer',
+  text_markdown: 'Text',
+  image: 'Image',
+  dropdown: 'Dropdown',
+  plain_text: 'Plain text',
+  iframe: 'Iframe',
+};
 
 const GRADING_MODE_OPTIONS = [
   { value: 'simple', label: 'Simple (call → expected value)' },
@@ -13,8 +44,20 @@ const GRADING_MODE_OPTIONS = [
   { value: 'discussion', label: 'Discussion (no code)' },
 ];
 
+// The preview badge just needs a quick at-a-glance tag, not the full
+// dropdown-option description — the long labels above wrap and overflow
+// the pill shape there.
+const GRADING_MODE_SHORT_LABELS = {
+  simple: 'Simple',
+  doctest: 'Doctest',
+  pltest: 'Custom test',
+  discussion: 'No code',
+};
+
 const blankForm = {
   title: '',
+  problemType: 'coding',
+  content: {},
   gradingMode: 'simple',
   prompt: '',
   starterCode: '',
@@ -89,6 +132,8 @@ export default function TaAssignmentEditorPage() {
     if (!q) return;
     setForm({
       title: q.title,
+      problemType: q.problem_type || 'coding',
+      content: q.content || {},
       gradingMode: q.grading_mode || 'simple',
       prompt: q.prompt,
       starterCode: q.starter_code || '',
@@ -114,6 +159,8 @@ export default function TaAssignmentEditorPage() {
     setFailingCases(null);
     const payload = {
       title: form.title.trim(),
+      problem_type: form.problemType,
+      content: form.content,
       grading_mode: form.gradingMode,
       prompt: form.prompt,
       starter_code: form.starterCode,
@@ -197,6 +244,8 @@ export default function TaAssignmentEditorPage() {
 
   if (loading) return <div className="page-loading">Loading…</div>;
 
+  const isCoding = form.problemType === 'coding';
+
   return (
     <div>
       <div className="breadcrumb-row">
@@ -212,7 +261,6 @@ export default function TaAssignmentEditorPage() {
       </div>
       <div className="page-header-row">
         <h1>Edit — {worksheet?.title}</h1>
-        <p>Each question is a slide — pick one on the left, edit it in the middle, preview what students see on the right. Drag to reorder.</p>
       </div>
 
       {error && <div className="alert alert-danger">{error}</div>}
@@ -258,48 +306,50 @@ export default function TaAssignmentEditorPage() {
       </div>
 
       <div className="editor-columns">
-        <div className="editor-slide-rail">
-          <button
-            type="button"
-            className="btn btn-sm btn-primary"
-            style={{ width: '100%', marginBottom: 10 }}
-            onClick={() => setSelectedId(NEW_SLIDE_ID)}
-            disabled={selectedId === NEW_SLIDE_ID}
-          >
-            + Add question
-          </button>
-          {reordering && (
-            <p style={{ fontSize: 11, color: 'var(--muted)', margin: '0 0 6px' }}>Saving order…</p>
-          )}
-          {questions.map((q, i) => (
-            <div
-              key={q.id}
-              className={`editor-slide-row ${selectedId === q.id ? 'selected' : ''}`}
-              draggable
-              onDragStart={() => setDragIndex(i)}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={() => handleDrop(i)}
-              onClick={() => setSelectedId(q.id)}
+        {questions.length > 0 && (
+          <div className="editor-slide-rail">
+            <button
+              type="button"
+              className="btn btn-sm btn-primary"
+              style={{ width: '100%', marginBottom: 10 }}
+              onClick={() => setSelectedId(NEW_SLIDE_ID)}
+              disabled={selectedId === NEW_SLIDE_ID}
             >
-              <span className="editor-slide-drag-handle">⠿</span>
-              <span className="editor-slide-label">
-                {i + 1}. {q.title}
-              </span>
-              <button
-                type="button"
-                className="editor-slide-delete"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (deletingId !== q.id) handleDeleteQuestion(q);
-                }}
-                disabled={deletingId === q.id}
-                title="Delete question"
+              + Add question
+            </button>
+            {reordering && (
+              <p style={{ fontSize: 11, color: 'var(--muted)', margin: '0 0 6px' }}>Saving order…</p>
+            )}
+            {questions.map((q, i) => (
+              <div
+                key={q.id}
+                className={`editor-slide-row ${selectedId === q.id ? 'selected' : ''}`}
+                draggable
+                onDragStart={() => setDragIndex(i)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={() => handleDrop(i)}
+                onClick={() => setSelectedId(q.id)}
               >
-                {deletingId === q.id ? '…' : '✕'}
-              </button>
-            </div>
-          ))}
-        </div>
+                <span className="editor-slide-drag-handle">⠿</span>
+                <span className="editor-slide-label">
+                  {i + 1}. {q.title}
+                </span>
+                <button
+                  type="button"
+                  className="editor-slide-delete"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (deletingId !== q.id) handleDeleteQuestion(q);
+                  }}
+                  disabled={deletingId === q.id}
+                  title="Delete question"
+                >
+                  {deletingId === q.id ? '…' : '✕'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
 
         {selectedId !== null && (
           <div className="editor-panes">
@@ -317,32 +367,56 @@ export default function TaAssignmentEditorPage() {
                     />
                   </div>
                   <div className="form-group">
-                    <label htmlFor="qGradingMode">Question type</label>
+                    <label htmlFor="qProblemType">Problem type</label>
                     <select
-                      id="qGradingMode"
+                      id="qProblemType"
                       className="form-control"
-                      value={form.gradingMode}
-                      onChange={(e) => setForm((f) => ({ ...f, gradingMode: e.target.value }))}
+                      value={form.problemType}
+                      onChange={(e) =>
+                        setForm((f) => {
+                          const next = e.target.value;
+                          const makeDefault = PROBLEM_TYPE_DEFAULT_CONTENT[next];
+                          return { ...f, problemType: next, content: makeDefault ? makeDefault() : {} };
+                        })
+                      }
                       style={{ maxWidth: 320 }}
                     >
-                      {GRADING_MODE_OPTIONS.map((o) => (
+                      {PROBLEM_TYPE_OPTIONS.map((o) => (
                         <option key={o.value} value={o.value}>
                           {o.label}
                         </option>
                       ))}
                     </select>
-                    <p style={{ fontSize: 12, color: 'var(--muted)', margin: '6px 0 0' }}>
-                      {form.gradingMode === 'simple' &&
-                        'Grades a list of call → expected-value pairs — test code is generated for you.'}
-                      {form.gradingMode === 'doctest' &&
-                        "Grades the >>> examples already in the student's own docstrings — no separate test code needed."}
-                      {form.gradingMode === 'pltest' &&
-                        'Grades hand-written test code (a PLTestCase class) for cases the call/expected shape can’t express.'}
-                      {form.gradingMode === 'discussion' &&
-                        'No code editor or autograder — just a prompt (embed any code as a markdown code block) and an optional written-up solution.'}
-                    </p>
                   </div>
-                  <div className="form-group" style={{ marginBottom: 0 }}>
+                  {isCoding && (
+                    <div className="form-group">
+                      <label htmlFor="qGradingMode">Question type</label>
+                      <select
+                        id="qGradingMode"
+                        className="form-control"
+                        value={form.gradingMode}
+                        onChange={(e) => setForm((f) => ({ ...f, gradingMode: e.target.value }))}
+                        style={{ maxWidth: 320 }}
+                      >
+                        {GRADING_MODE_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                      <p style={{ fontSize: 12, color: 'var(--muted)', margin: '6px 0 0' }}>
+                        {form.gradingMode === 'simple' &&
+                          'Grades a list of call → expected-value pairs — test code is generated for you.'}
+                        {form.gradingMode === 'doctest' &&
+                          "Grades the >>> examples already in the student's own docstrings — no separate test code needed."}
+                        {form.gradingMode === 'pltest' &&
+                          'Grades hand-written test code (a PLTestCase class) for cases the call/expected shape can’t express.'}
+                        {form.gradingMode === 'discussion' &&
+                          'No code editor or autograder — just a prompt (embed any code as a markdown code block) and an optional written-up solution.'}
+                      </p>
+                    </div>
+                  )}
+                  <div className="form-group" style={{ marginBottom: isCoding ? 0 : 16 }}>
                     <label htmlFor="qPrompt">Problem description (markdown)</label>
                     <textarea
                       id="qPrompt"
@@ -353,10 +427,17 @@ export default function TaAssignmentEditorPage() {
                       required
                     />
                   </div>
+                  {!isCoding && (
+                    <ProblemTypeEditor
+                      type={form.problemType}
+                      content={form.content}
+                      onChange={(content) => setForm((f) => ({ ...f, content }))}
+                    />
+                  )}
                 </div>
               </div>
 
-              {form.gradingMode !== 'discussion' && (
+              {isCoding && form.gradingMode !== 'discussion' && (
                 <div className="panel">
                   <div className="panel-heading">
                     <h4>Problem code</h4>
@@ -388,7 +469,7 @@ export default function TaAssignmentEditorPage() {
                 </div>
               )}
 
-              {form.gradingMode === 'simple' && (
+              {isCoding && form.gradingMode === 'simple' && (
                 <div className="panel">
                   <div className="panel-heading">
                     <h4>Test cases</h4>
@@ -431,7 +512,7 @@ export default function TaAssignmentEditorPage() {
                 </div>
               )}
 
-              {form.gradingMode === 'pltest' && (
+              {isCoding && form.gradingMode === 'pltest' && (
                 <div className="panel">
                   <div className="panel-heading">
                     <h4>Test code</h4>
@@ -451,7 +532,7 @@ export default function TaAssignmentEditorPage() {
                 </div>
               )}
 
-              {form.gradingMode !== 'discussion' && (
+              {isCoding && form.gradingMode !== 'discussion' && (
                 <div className="panel">
                   <div className="panel-heading">
                     <h4>Passing solution</h4>
@@ -518,14 +599,19 @@ export default function TaAssignmentEditorPage() {
                 <div className="q-label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span>{form.title || 'Untitled question'}</span>
                   <span className="badge badge-default">
-                    {GRADING_MODE_OPTIONS.find((o) => o.value === form.gradingMode)?.label || form.gradingMode}
+                    {isCoding
+                      ? GRADING_MODE_SHORT_LABELS[form.gradingMode] || form.gradingMode
+                      : PROBLEM_TYPE_SHORT_LABELS[form.problemType] || form.problemType}
                   </span>
                 </div>
                 <MarkdownContent content={form.prompt || '_Nothing written yet._'} />
-                {form.starterCode && (
+                {isCoding && form.starterCode && (
                   <pre className="code-editor-wrap" style={{ padding: 10, color: '#eee', margin: 0 }}>
                     <code className="code">{form.starterCode}</code>
                   </pre>
+                )}
+                {!isCoding && (
+                  <ProblemWidget readOnly problemType={form.problemType} content={form.content} />
                 )}
               </div>
             </div>

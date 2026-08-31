@@ -33,3 +33,5 @@ export const getGroupHistory = (groupId) => api.get(`/groups/${groupId}/history`
 export const getGroupWork = (groupId, worksheetId) => api.get(`/groups/${groupId}/worksheets/${worksheetId}/work`);
 export const practiceRun = (groupId, worksheetId, questionId, code, prediction) =>
   api.post(`/groups/${groupId}/worksheets/${worksheetId}/questions/${questionId}/practice-run`, { code, prediction });
+export const submitResponse = (groupId, worksheetId, questionId, response) =>
+  api.post(`/groups/${groupId}/worksheets/${worksheetId}/questions/${questionId}/response`, { response });

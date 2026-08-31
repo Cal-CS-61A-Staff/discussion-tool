@@ -21,10 +21,12 @@ from sqlalchemy import update
 
 from server.extensions import db
 from server.models.group import GroupAssignmentProgress
+from server.models.question_response import QuestionResponse
 from server.models.rating import Rating
 from server.models.test_run import TestRun
 from server.models.worksheet import Question
 from server.services import presence
+from server.services import response_grading
 from server.services import typist as typist_service
 from server.utils import utcnow
 
@@ -33,6 +35,11 @@ def all_members_rated(group_id, question_id):
     member_count = presence.active_member_count(group_id)
     rated_count = Rating.query.filter_by(group_id=group_id, question_id=question_id).count()
     return member_count > 0 and rated_count >= member_count
+
+
+def _has_correct_group_response(group_id, question_id):
+    response = QuestionResponse.query.filter_by(group_id=group_id, question_id=question_id).first()
+    return response is not None and response.is_correct is True
 
 
 def has_passing_shared_run(group_id, question_id):
@@ -44,8 +51,17 @@ def has_passing_shared_run(group_id, question_id):
     'discussion' questions have no code/autograder at all, so there's
     nothing to run — this is trivially satisfied for them, and advancing
     depends only on everyone having rated (see ready_to_advance).
+
+    Non-code questions (problem_type != 'coding'): auto-checkable types
+    (multiple choice, dropdown, fill-in-the-blank, graded short answer)
+    need a correct shared group answer on record; display/ungraded types
+    behave like 'discussion'.
     """
     question = Question.query.get(question_id)
+    if question is not None and (question.problem_type or "coding") != "coding":
+        if response_grading.is_auto_checkable(question):
+            return _has_correct_group_response(group_id, question_id)
+        return True
     if question is not None and question.grading_mode == "discussion":
         return True
 
@@ -72,7 +88,18 @@ def has_ever_passed_tests(group_id, question_id):
     *display* (build_group_history, build_group_work, worksheet_grades) —
     a weaker bar than has_passing_shared_run above (no prediction-match
     requirement), which gates advancing instead.
+
+    For auto-checkable non-code questions this is "the group has a correct
+    answer on record"; display/ungraded non-code types have no notion of
+    passing and stay False (advancing past them counts as completed via
+    the question index, not passed — same as 'discussion').
     """
+    question = Question.query.get(question_id)
+    if question is not None and (question.problem_type or "coding") != "coding":
+        if response_grading.is_auto_checkable(question):
+            return _has_correct_group_response(group_id, question_id)
+        return False
+
     runs = TestRun.query.filter_by(group_id=group_id, question_id=question_id, source="shared", status="done").all()
     return any(run.total_count > 0 and run.passed_count == run.total_count for run in runs)
 

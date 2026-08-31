@@ -43,6 +43,22 @@ class Question(db.Model):
     language = db.Column(db.String(20), default="python")
     solution_markdown = db.Column(db.Text, nullable=True)
 
+    # 'coding' (the default) is the historic behaviour: an embedded code
+    # editor graded by the sandboxed autograder via grading_mode below.
+    # Every other value is a non-code answer/content widget authored via
+    # the guided TA form — multiple_choice, dropdown, fill_blank_code,
+    # fill_blank_markdown, short_answer, text_markdown, plain_text, image,
+    # iframe. For those, grading_mode is forced to 'discussion' (a compat
+    # shim so the code/grader guards elsewhere naturally skip them) and
+    # content_json holds the type-specific config. See
+    # server/services/response_grading.py for the schema per type and
+    # server/blueprints/admin.py:PROBLEM_TYPES for the allowed set.
+    problem_type = db.Column(db.String(30), nullable=False, default="coding")
+    # JSON-in-Text (same guarded json.dumps/json.loads pattern as
+    # test_cases_json): {options:[...]}, {template, blanks:[...]},
+    # {answer, accept, case_sensitive}, {url, alt}, etc. NULL for 'coding'.
+    content_json = db.Column(db.Text, nullable=True)
+
     # Autograder fields (server/services/grading.py). setup_code is a shared
     # preamble (e.g. the Tree class def) executed before both setup and
     # student code. grading_mode selects which harness path runs in the

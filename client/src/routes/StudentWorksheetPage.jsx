@@ -6,6 +6,7 @@ import GroupMembersStrip from '../components/student/GroupMembersStrip.jsx';
 import MarkdownContent from '../components/student/MarkdownContent.jsx';
 import NextQuestionButton from '../components/student/NextQuestionButton.jsx';
 import PracticeQuestion from '../components/student/PracticeQuestion.jsx';
+import ProblemWidget from '../components/student/ProblemWidget.jsx';
 import ProgressStrip from '../components/student/ProgressStrip.jsx';
 import ScratchEditor from '../components/student/ScratchEditor.jsx';
 import TestRunner from '../components/student/TestRunner.jsx';
@@ -22,6 +23,7 @@ export default function StudentWorksheetPage() {
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
   const [advancing, setAdvancing] = useState(false);
   const [givingUp, setGivingUp] = useState(false);
+  const [responseSubmitting, setResponseSubmitting] = useState(false);
   // 'idle' | 'saving' | 'saved' | 'error' — feedback for the debounced
   // shared-code autosave (handleCodeChange below), since it's collaborative
   // and a typist should know their keystrokes actually reached the server.
@@ -195,9 +197,23 @@ export default function StudentWorksheetPage() {
     currentTypist && me && currentTypist.display_name === me.display_name
       ? `${currentTypist.display_name} (different account)`
       : currentTypist?.display_name || 'Someone';
-  const isDiscussion = data.question.grading_mode === 'discussion';
+  const isCoding = (data.question.problem_type || 'coding') === 'coding';
+  const isDiscussion = isCoding && data.question.grading_mode === 'discussion';
 
   const clearError = () => setActionError('');
+
+  const handleSubmitResponse = async (response) => {
+    clearError();
+    setResponseSubmitting(true);
+    try {
+      await groupsApi.submitResponse(groupId, worksheetId, data.question.id, response);
+      await refetch();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setResponseSubmitting(false);
+    }
+  };
 
   const handleGiveUp = async () => {
     clearError();
@@ -324,7 +340,7 @@ export default function StudentWorksheetPage() {
 
       {isViewingFocus ? (
         <>
-          {!isDiscussion && !data.group.is_individual && (
+          {isCoding && !isDiscussion && !data.group.is_individual && (
             <TypistBanner
               members={data.members}
               isMeTypist={isMeTypist}
@@ -342,7 +358,19 @@ export default function StudentWorksheetPage() {
               </div>
               <MarkdownContent content={data.question.prompt} />
 
-              {!isDiscussion && (
+              {!isCoding && (
+                <ProblemWidget
+                  key={data.question.id}
+                  problemType={data.question.problem_type}
+                  content={data.question.content}
+                  response={data.group_response}
+                  responseCorrect={data.group_response_correct}
+                  onSubmit={handleSubmitResponse}
+                  submitting={responseSubmitting}
+                />
+              )}
+
+              {isCoding && !isDiscussion && (
                 <>
                   <CodeEditor
                     code={localCode}
@@ -375,7 +403,7 @@ export default function StudentWorksheetPage() {
             </div>
           </div>
 
-          {!isDiscussion && (
+          {isCoding && !isDiscussion && (
             <ScratchEditor
               key={data.question.id}
               groupId={groupId}
