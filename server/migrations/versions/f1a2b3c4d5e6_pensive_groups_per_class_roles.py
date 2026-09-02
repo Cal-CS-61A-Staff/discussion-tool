@@ -57,6 +57,22 @@ def upgrade():
         )
     )
     bind.execute(sa.text("DELETE FROM groups WHERE class_id IS NULL"))
+    # Group numbers used to be unique per *section*, so class-scoping can
+    # collide (two rooms each had a "Group 1"). Renumber non-individual
+    # groups contiguously within each class — keeping old-number, then id,
+    # order — before the class-wide unique constraint goes on. Individual
+    # groups keep number = NULL (multiple NULLs are fine in a UNIQUE).
+    # Alias-free UPDATE...FROM so it runs on both Postgres and SQLite.
+    bind.execute(
+        sa.text(
+            "WITH ranked AS ("
+            "  SELECT id, row_number() OVER (PARTITION BY class_id ORDER BY number, id) AS rn"
+            "  FROM groups WHERE number IS NOT NULL"
+            ") "
+            "UPDATE groups SET number = (SELECT rn FROM ranked WHERE ranked.id = groups.id) "
+            "WHERE number IS NOT NULL"
+        )
+    )
     with op.batch_alter_table("groups", schema=None) as batch_op:
         batch_op.alter_column("class_id", existing_type=sa.Integer(), nullable=False)
         batch_op.drop_column("section_id")
@@ -161,6 +177,18 @@ def downgrade():
         )
     )
     bind.execute(sa.text("DELETE FROM groups WHERE section_id IS NULL"))
+    # Collapsing every class's groups onto its lowest section id can also
+    # collide on (section_id, number) — renumber the same way.
+    bind.execute(
+        sa.text(
+            "WITH ranked AS ("
+            "  SELECT id, row_number() OVER (PARTITION BY section_id ORDER BY number, id) AS rn"
+            "  FROM groups WHERE number IS NOT NULL"
+            ") "
+            "UPDATE groups SET number = (SELECT rn FROM ranked WHERE ranked.id = groups.id) "
+            "WHERE number IS NOT NULL"
+        )
+    )
     with op.batch_alter_table("groups", schema=None) as batch_op:
         batch_op.alter_column("section_id", existing_type=sa.Integer(), nullable=False)
         batch_op.drop_column("class_id")
