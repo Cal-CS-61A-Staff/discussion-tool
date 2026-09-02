@@ -57,12 +57,18 @@ def upgrade():
         )
     )
     bind.execute(sa.text("DELETE FROM groups WHERE class_id IS NULL"))
+    # Drop section_id first — that removes the old per-section unique
+    # constraint (uq_groups_section_id_number) so we can freely renumber
+    # groups without a row-by-row uniqueness check tripping mid-UPDATE.
+    with op.batch_alter_table("groups", schema=None) as batch_op:
+        batch_op.alter_column("class_id", existing_type=sa.Integer(), nullable=False)
+        batch_op.drop_column("section_id")
+        batch_op.create_foreign_key("fk_groups_class_id_classes", "classes", ["class_id"], ["id"])
     # Group numbers used to be unique per *section*, so class-scoping can
     # collide (two rooms each had a "Group 1"). Renumber non-individual
-    # groups contiguously within each class — keeping old-number, then id,
-    # order — before the class-wide unique constraint goes on. Individual
-    # groups keep number = NULL (multiple NULLs are fine in a UNIQUE).
-    # Alias-free UPDATE...FROM so it runs on both Postgres and SQLite.
+    # groups contiguously within each class, keeping old-number-then-id
+    # order. Individual groups keep number = NULL (multiple NULLs are fine
+    # in a UNIQUE). Alias-free so it runs on Postgres and SQLite.
     bind.execute(
         sa.text(
             "WITH ranked AS ("
@@ -74,10 +80,7 @@ def upgrade():
         )
     )
     with op.batch_alter_table("groups", schema=None) as batch_op:
-        batch_op.alter_column("class_id", existing_type=sa.Integer(), nullable=False)
-        batch_op.drop_column("section_id")
         batch_op.create_unique_constraint("uq_groups_class_id_number", ["class_id", "number"])
-        batch_op.create_foreign_key("fk_groups_class_id_classes", "classes", ["class_id"], ["id"])
 
     # --- class_memberships (replaces class_enrollments) -----------------
     op.create_table(
@@ -177,6 +180,12 @@ def downgrade():
         )
     )
     bind.execute(sa.text("DELETE FROM groups WHERE section_id IS NULL"))
+    # Drop class_id first (removing uq_groups_class_id_number) so the
+    # renumber below has no row-by-row uniqueness check to trip.
+    with op.batch_alter_table("groups", schema=None) as batch_op:
+        batch_op.alter_column("section_id", existing_type=sa.Integer(), nullable=False)
+        batch_op.drop_column("class_id")
+        batch_op.create_foreign_key("fk_groups_section_id_sections", "sections", ["section_id"], ["id"])
     # Collapsing every class's groups onto its lowest section id can also
     # collide on (section_id, number) — renumber the same way.
     bind.execute(
@@ -190,10 +199,7 @@ def downgrade():
         )
     )
     with op.batch_alter_table("groups", schema=None) as batch_op:
-        batch_op.alter_column("section_id", existing_type=sa.Integer(), nullable=False)
-        batch_op.drop_column("class_id")
         batch_op.create_unique_constraint("uq_groups_section_id_number", ["section_id", "number"])
-        batch_op.create_foreign_key("fk_groups_section_id_sections", "sections", ["section_id"], ["id"])
 
     op.drop_column("sections", "assigned_numbers")
     with op.batch_alter_table("classes", schema=None) as batch_op:
