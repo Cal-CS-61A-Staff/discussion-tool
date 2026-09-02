@@ -6,7 +6,6 @@ the class cascades everything.
 """
 
 from server.extensions import db
-from server.models.attempt import Attempt
 from server.models.group import Group, GroupAssignmentProgress, GroupMembership, GroupQuestionState
 from server.models.klass import Class, ClassMembership
 from server.models.rating import Rating
@@ -43,18 +42,15 @@ def _make_full_class():
     group = Group(class_id=klass.id, number=1, name="G1")
     db.session.add(group)
     db.session.flush()
-    db.session.add(GroupMembership(group_id=group.id, user_id=student.id))
+    db.session.add(GroupMembership(group_id=group.id, participant_key="p-stu", participant_name="Student"))
     db.session.add(GroupAssignmentProgress(group_id=group.id, worksheet_id=worksheet.id))
     db.session.add(GroupQuestionState(group_id=group.id, question_id=question.id))
-    db.session.add(Rating(group_id=group.id, question_id=question.id, user_id=student.id, value=3))
-    db.session.add(
-        Attempt(group_id=group.id, question_id=question.id, user_id=student.id, prediction_text="x", is_match=True)
-    )
+    db.session.add(Rating(group_id=group.id, question_id=question.id, participant_key="p-stu", value=3))
     db.session.add(
         TestRun(
             group_id=group.id,
             question_id=question.id,
-            user_id=student.id,
+            participant_key="p-stu",
             source="shared",
             prediction_text="x",
             code_snapshot="x",
@@ -141,7 +137,6 @@ def test_delete_class_cascades_everything(app, client, db):
     assert GroupAssignmentProgress.query.filter_by(group_id=group_id).count() == 0
     assert GroupQuestionState.query.filter_by(group_id=group_id).count() == 0
     assert Rating.query.filter_by(group_id=group_id).count() == 0
-    assert Attempt.query.filter_by(group_id=group_id).count() == 0
     assert TestRun.query.filter_by(group_id=group_id).count() == 0
     assert SectionCoTeacher.query.filter_by(section_id=section_id).count() == 0
     assert ClassMembership.query.filter_by(class_id=class_id).count() == 0

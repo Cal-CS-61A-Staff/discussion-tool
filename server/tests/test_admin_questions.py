@@ -92,7 +92,7 @@ def test_worksheet_grades_counts_a_question_ever_passed(app, client):
             TestRun(
                 group_id=group.id,
                 question_id=questions[0].id,
-                user_id=student.id,
+                participant_key=f"u{student.id}",
                 source="shared",
                 prediction_text="x",
                 code_snapshot="code",
@@ -133,7 +133,7 @@ def test_worksheet_grades_dont_regress_after_a_later_failing_attempt(app, client
             TestRun(
                 group_id=group.id,
                 question_id=questions[0].id,
-                user_id=student.id,
+                participant_key=f"u{student.id}",
                 source="shared",
                 prediction_text="x",
                 code_snapshot="code",
@@ -166,7 +166,7 @@ def test_delete_worksheet_cascades(app, client):
         TestRun(
             group_id=group.id,
             question_id=question_id,
-            user_id=student.id,
+            participant_key=f"u{student.id}",
             source="shared",
             prediction_text="x",
             code_snapshot="code",

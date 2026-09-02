@@ -1,14 +1,9 @@
 import { api } from './client.js';
 
+// Staff/admin only — students have no class list; they use a share link
+// (client/src/api/w.js).
 export const listClasses = () => api.get('/classes');
-export const joinClass = (code) => api.post('/classes/join', { code });
-export const myGroups = () => api.get('/me/groups');
 export const classWorksheets = (classId) => api.get(`/classes/${classId}/worksheets`);
-
-// Pensive-style join: any class member types a group number.
-export const joinGroupByNumber = (classId, number, name) =>
-  api.post(`/classes/${classId}/groups/join`, { number, ...(name ? { name } : {}) });
-export const workIndividually = (classId) => api.post(`/classes/${classId}/work-individually`);
 
 // TA dashboard watch list (staff-only).
 export const getWatchedNumbers = (classId) => api.get(`/classes/${classId}/watched-numbers`);

@@ -41,6 +41,13 @@ EOF
 
 echo "==> Restarting services"
 sudo systemctl restart cs61a-discussion-web
+# Pick up any change to the retention unit/timer (first deploy after this
+# lands still needs a one-time `sudo systemctl enable --now
+# cs61a-retention.timer`).
+sudo systemctl daemon-reload
+if systemctl list-unit-files cs61a-retention.timer >/dev/null 2>&1; then
+  sudo systemctl restart cs61a-retention.timer || true
+fi
 
 echo "==> Waiting for the web app to come back up"
 sleep 2

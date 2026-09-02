@@ -10,7 +10,7 @@ from server.models.klass import ClassMembership
 from server.models.section import Section
 from server.models.user import User
 from server.models.worksheet import Question, Worksheet
-from server.tests.conftest import add_member, login_as, make_class
+from server.tests.conftest import act_as_participant, add_member, login_as, make_class
 
 
 def _two_classes_with_staff():
@@ -102,16 +102,18 @@ def test_group_history_visible_to_member_and_class_staff_only(app, client):
     outsider = User(display_name="Outsider", role="student")
     db.session.add_all([member, outsider])
     db.session.flush()
-    db.session.add(GroupMembership(group_id=group.id, user_id=member.id))
+    db.session.add(
+        GroupMembership(group_id=group.id, participant_key=f"u{member.id}", participant_name="Member")
+    )
     db.session.add(GroupAssignmentProgress(group_id=group.id, worksheet_id=worksheet.id, current_question_index=1))
     db.session.commit()
 
-    login_as(client, member)
+    act_as_participant(client, member)
     resp = client.get(f"/api/groups/{group.id}/history")
     assert resp.status_code == 200
     assert resp.get_json()["history"][0]["status"] == "completed"
 
-    login_as(client, outsider)
+    act_as_participant(client, outsider)
     assert client.get(f"/api/groups/{group.id}/history").status_code == 403
 
     login_as(client, staff_a)  # staff of this class
@@ -156,32 +158,46 @@ def test_admin_login_requires_admin_role(app, client):
     assert client.post("/api/auth/admin-login", json={"admin_id": plain.id}).status_code == 404
 
 
-def test_join_class_by_code_and_scoping(app, client):
-    class_a, class_b, _room_a, _room_b, _staff_a, _staff_b, _admin = _two_classes_with_staff()
-    worksheet = Worksheet(class_id=class_b.id, slug="wb", title="B Disc", is_published=True)
-    db.session.add(worksheet)
-    db.session.commit()
+def test_student_class_endpoints_are_staff_only(app, client):
+    _class_a, class_b, _room_a, _room_b, _staff_a, _staff_b, _admin = _two_classes_with_staff()
 
     student = User(display_name="Stu", role="student")
     db.session.add(student)
     db.session.commit()
-    login_as(client, student)
 
-    # Not in class_b yet — can't see its assignments.
+    # A plain logged-in user with no staff membership sees no classes and
+    # can't list a class's assignments — students reach an assignment only
+    # by its share link now.
+    login_as(client, student)
+    assert client.get("/api/classes").get_json()["classes"] == []
     assert client.get(f"/api/classes/{class_b.id}/worksheets").status_code == 403
 
-    resp = client.post("/api/classes/join", json={"code": "bbbbbb"})  # case-insensitive
+    # The old join-by-code endpoint is gone.
+    assert client.post("/api/classes/join", json={"code": "bbbbbb"}).status_code in (404, 405)
+
+
+def test_anonymous_join_by_share_link(app, client):
+    class_a, _class_b, _room_a, _room_b, _staff_a, _staff_b, _admin = _two_classes_with_staff()
+    worksheet = Worksheet(class_id=class_a.id, slug="wa", title="A Disc", is_published=True)
+    db.session.add(worksheet)
+    db.session.flush()
+    from server.tests.conftest import publish
+
+    code = publish(worksheet)
+    db.session.commit()
+
+    # No account, no enrollment — just the link.
+    resp = client.get(f"/api/w/{code}")
+    assert resp.status_code == 200 and resp.get_json()["worksheet_title"] == "A Disc"
+
+    resp = client.post(f"/api/w/{code}/join", json={"name": "Robin", "number": 3})
     assert resp.status_code == 200
-    assert resp.get_json()["klass"]["my_role"] == "student"
-    assert ClassMembership.query.filter_by(user_id=student.id, class_id=class_b.id).count() == 1
+    group_id = resp.get_json()["group_id"]
 
-    resp = client.get(f"/api/classes/{class_b.id}/worksheets")
-    assert resp.status_code == 200
-    assert [w["title"] for w in resp.get_json()["worksheets"]] == ["B Disc"]
+    membership = GroupMembership.query.filter_by(group_id=group_id).one()
+    assert membership.participant_name == "Robin"
+    # No users row was created for the student.
+    assert User.query.filter_by(display_name="Robin").count() == 0
 
-    # class_a still invisible.
-    assert client.get("/api/classes").get_json()["classes"] == [
-        c for c in client.get("/api/classes").get_json()["classes"] if c["id"] == class_b.id
-    ]
-
-    assert client.post("/api/classes/join", json={"code": "NOPE99"}).status_code == 404
+    state = client.get(f"/api/groups/{group_id}/state?worksheet_id={worksheet.id}")
+    assert state.status_code == 200

@@ -2,11 +2,9 @@ import json
 from datetime import timedelta
 
 from sqlalchemy import func
-from sqlalchemy.orm import joinedload
 
 from server.config import Config
 from server.extensions import db
-from server.models.attempt import Attempt
 from server.models.group import Group, GroupAssignmentProgress, GroupMembership, GroupQuestionState, ScratchCode
 from server.models.question_response import QuestionResponse
 from server.models.rating import Rating
@@ -19,7 +17,15 @@ from server.services import presence
 from server.services import response_grading
 from server.utils import utcnow
 
-TA_ATTEMPT_HISTORY_LIMIT = 20
+
+def _member_names(group_id):
+    """{participant_key: participant_name} for a group — the one place a
+    name lives now (GroupMembership); every other participant-scoped row
+    carries only the key."""
+    return {
+        m.participant_key: m.participant_name
+        for m in GroupMembership.query.filter_by(group_id=group_id).all()
+    }
 
 
 def current_question(worksheet_id, current_question_index):
@@ -91,7 +97,7 @@ def build_prediction(question, group_id):
     return out
 
 
-def build_group_state(group, progress, user, state):
+def build_group_state(group, progress, participant_key, state):
     # A group can have several worksheets in flight independently (each
     # gets its own GroupAssignmentProgress/typist) — the title is here so
     # the page can say *which one* you're looking at. Without it, two
@@ -115,33 +121,36 @@ def build_group_state(group, progress, user, state):
         }
 
     code = state.code
-    my_scratch = ScratchCode.query.filter_by(group_id=group.id, question_id=question.id, user_id=user.id).first()
+    my_scratch = ScratchCode.query.filter_by(
+        group_id=group.id, question_id=question.id, participant_key=participant_key
+    ).first()
 
-    members = GroupMembership.query.options(joinedload(GroupMembership.user)).filter_by(group_id=group.id).all()
+    members = GroupMembership.query.filter_by(group_id=group.id).all()
     stale_cutoff = utcnow() - timedelta(seconds=Config.TYPIST_STALE_SECONDS)
 
     # One query for every member's rating on this question instead of one
     # per member — this runs on every ~2.5s /state poll for every active
     # group, so an N+1 here scales with total concurrent groups, not just
     # this group's size.
-    ratings_by_user = {
-        r.user_id: r for r in Rating.query.filter_by(group_id=group.id, question_id=question.id).all()
+    ratings_by_key = {
+        r.participant_key: r for r in Rating.query.filter_by(group_id=group.id, question_id=question.id).all()
     }
 
     member_payload = []
     my_rating = None
     for m in members:
-        rating = ratings_by_user.get(m.user_id)
-        if m.user_id == user.id:
+        rating = ratings_by_key.get(m.participant_key)
+        if m.participant_key == participant_key:
             my_rating = rating.value if rating else None
         member_payload.append(
             {
-                "user_id": m.user_id,
-                "display_name": m.user.display_name,
-                "is_typist": progress.typist_user_id == m.user_id,
-                "is_typist_stale": progress.typist_user_id == m.user_id and m.last_seen_at < stale_cutoff,
+                # An opaque per-session participant key, not a users.id.
+                "user_id": m.participant_key,
+                "display_name": m.participant_name,
+                "is_typist": progress.typist_key == m.participant_key,
+                "is_typist_stale": progress.typist_key == m.participant_key and m.last_seen_at < stale_cutoff,
                 "has_rated_current": rating is not None,
-                "is_me": m.user_id == user.id,
+                "is_me": m.participant_key == participant_key,
                 # Recently polled /state — the "live count" only counts
                 # these, and the pen is only ever (re)assigned among them.
                 "is_active": m.last_seen_at >= stale_cutoff,
@@ -164,7 +173,7 @@ def build_group_state(group, progress, user, state):
         except ValueError:
             last_shared_run = None
         if last_shared_run is not None:
-            last_shared_run["by"] = last_shared_run_row.user.display_name
+            last_shared_run["by"] = _member_names(group.id).get(last_shared_run_row.participant_key, "a groupmate")
 
     group_answer, group_answer_correct = _group_response(group.id, question.id)
 
@@ -224,8 +233,8 @@ def build_group_state(group, progress, user, state):
 
 def build_group_detail(group, progress, state):
     """TA-only detail view: unlike the student /state payload, this reveals
-    expected_output up front and includes recent attempt history, since a TA
-    is trusted with the answer regardless of whether the group has run yet.
+    expected_output up front, since a TA is trusted with the answer
+    regardless of whether the group has run yet.
     """
     question = current_question(progress.worksheet_id, progress.current_question_index)
     if question is None:
@@ -242,37 +251,21 @@ def build_group_detail(group, progress, state):
     code = state.code if state is not None else (question.starter_code or "")
     ta_group_answer, ta_group_answer_correct = _group_response(group.id, question.id)
 
-    members = GroupMembership.query.options(joinedload(GroupMembership.user)).filter_by(group_id=group.id).all()
-    ratings_by_user = {
-        r.user_id: r for r in Rating.query.filter_by(group_id=group.id, question_id=question.id).all()
+    members = GroupMembership.query.filter_by(group_id=group.id).all()
+    ratings_by_key = {
+        r.participant_key: r for r in Rating.query.filter_by(group_id=group.id, question_id=question.id).all()
     }
     member_payload = []
     for m in members:
-        rating = ratings_by_user.get(m.user_id)
+        rating = ratings_by_key.get(m.participant_key)
         member_payload.append(
             {
-                "user_id": m.user_id,
-                "display_name": m.user.display_name,
-                "is_typist": progress.typist_user_id == m.user_id,
+                "user_id": m.participant_key,
+                "display_name": m.participant_name,
+                "is_typist": progress.typist_key == m.participant_key,
                 "rating": rating.value if rating else None,
             }
         )
-
-    attempts = (
-        Attempt.query.filter_by(group_id=group.id, question_id=question.id)
-        .order_by(Attempt.created_at.desc())
-        .limit(TA_ATTEMPT_HISTORY_LIMIT)
-        .all()
-    )
-    attempt_payload = [
-        {
-            "prediction": a.prediction_text,
-            "is_match": a.is_match,
-            "by": a.user.display_name,
-            "created_at": a.created_at.isoformat(),
-        }
-        for a in attempts
-    ]
 
     return {
         "group": {
@@ -304,7 +297,10 @@ def build_group_detail(group, progress, state):
         "total_questions": total_questions_for_worksheet(progress.worksheet_id),
         "code": code,
         "members": member_payload,
-        "attempts": attempt_payload,
+        # Per-participant prediction-quiz history (Attempt) was removed with
+        # the anonymous-session redesign; kept as an empty list for the
+        # TA detail pane's shape.
+        "attempts": [],
         "cooldown": {
             "active": cooldown_service.is_active(progress),
             "remaining_seconds": cooldown_service.remaining_seconds(progress),
@@ -356,27 +352,31 @@ def build_dashboard(worksheet_id, entries):
 
         progress = GroupAssignmentProgress.query.filter_by(group_id=group.id, worksheet_id=worksheet_id).first()
         current_index = progress.current_question_index if progress else 0
-        typist_user_id = progress.typist_user_id if progress else None
+        typist_key = progress.typist_key if progress else None
         question_started_at = progress.question_started_at if progress else None
 
-        members = GroupMembership.query.options(joinedload(GroupMembership.user)).filter_by(group_id=group.id).all()
-        active_ids = {m.user_id for m in presence.active_members(group.id)}
+        members = GroupMembership.query.filter_by(group_id=group.id).all()
+        active_keys = {m.participant_key for m in presence.active_members(group.id)}
         question = current_question(worksheet_id, current_index)
 
-        ratings_by_user = {}
+        ratings_by_key = {}
         if question is not None:
-            ratings_by_user = {
-                r.user_id: r.value
+            ratings_by_key = {
+                r.participant_key: r.value
                 for r in Rating.query.filter_by(group_id=group.id, question_id=question.id).all()
             }
 
         member_payload = [
-            {"user_id": m.user_id, "display_name": m.user.display_name, "rating": ratings_by_user.get(m.user_id)}
+            {
+                "user_id": m.participant_key,
+                "display_name": m.participant_name,
+                "rating": ratings_by_key.get(m.participant_key),
+            }
             for m in members
         ]
-        present = [m.user.display_name for m in members if m.user_id in active_ids]
+        present = [m.participant_name for m in members if m.participant_key in active_keys]
 
-        typist_name = next((m.user.display_name for m in members if m.user_id == typist_user_id), None)
+        typist_name = next((m.participant_name for m in members if m.participant_key == typist_key), None)
         completed = question is None
         if completed:
             status = "done"
@@ -453,49 +453,7 @@ def build_group_history(group):
     return history
 
 
-def student_worksheet_progress(user, worksheet):
-    """(my_rating, my_group_id) for `user`'s own engagement with
-    `worksheet`, via whichever of their groups has progress on it —
-    (None, None) if they haven't started it via any group yet. Backs the
-    shared Assignments page's per-row rating display (server/blueprints/
-    sections.py:_serialize_worksheet) — unlike the old "My Assignments"
-    view this replaced, it's not restricted to *completed* assignments,
-    since the page now lists every assignment in the class regardless of
-    where a student's group currently stands on it.
-
-    If a student has more than one group with progress on this worksheet
-    (e.g. they switched sections), the most recently active one wins —
-    rare in practice, and there's no single "correct" answer for that case.
-    """
-    membership_group_ids = [m.group_id for m in GroupMembership.query.filter_by(user_id=user.id).all()]
-    if not membership_group_ids:
-        return None, None
-
-    progress = (
-        GroupAssignmentProgress.query.filter(
-            GroupAssignmentProgress.worksheet_id == worksheet.id,
-            GroupAssignmentProgress.group_id.in_(membership_group_ids),
-        )
-        .order_by(GroupAssignmentProgress.question_started_at.desc())
-        .first()
-    )
-    if progress is None:
-        return None, None
-
-    question_ids = [
-        q.id for q in Question.query.filter_by(worksheet_id=worksheet.id).with_entities(Question.id).all()
-    ]
-    my_avg_rating = (
-        db.session.query(func.avg(Rating.value))
-        .filter(Rating.user_id == user.id, Rating.question_id.in_(question_ids), Rating.group_id == progress.group_id)
-        .scalar()
-        if question_ids
-        else None
-    )
-    return (round(my_avg_rating, 1) if my_avg_rating is not None else None), progress.group_id
-
-
-def build_group_work(group, worksheet_id, user):
+def build_group_work(group, worksheet_id, participant_key):
     """Replay of this group's already-*unlocked* questions on one
     assignment and their most recent submitted code (the latest shared
     "Run tests" snapshot) — backs both the History page's "View work"
@@ -515,10 +473,8 @@ def build_group_work(group, worksheet_id, user):
     without their own "passed" badge flickering off if an in-progress
     attempt happens to fail.
 
-    `scratch_code` is `user`'s own personal practice code for that
-    question (ScratchCode), not the group's shared one — the whole reason
-    it's persisted server-side rather than only in browser localStorage is
-    so it's still visible here, not just live while working.
+    `scratch_code` is the requesting participant's own personal practice
+    code for that question (ScratchCode), not the group's shared one.
     """
     worksheet = Worksheet.query.get_or_404(worksheet_id)
     progress = GroupAssignmentProgress.query.filter_by(group_id=group.id, worksheet_id=worksheet_id).first()
@@ -537,8 +493,12 @@ def build_group_work(group, worksheet_id, user):
             .order_by(TestRun.created_at.desc())
             .first()
         )
-        scratch = ScratchCode.query.filter_by(group_id=group.id, question_id=question.id, user_id=user.id).first()
-        rating = Rating.query.filter_by(group_id=group.id, question_id=question.id, user_id=user.id).first()
+        scratch = ScratchCode.query.filter_by(
+            group_id=group.id, question_id=question.id, participant_key=participant_key
+        ).first()
+        rating = Rating.query.filter_by(
+            group_id=group.id, question_id=question.id, participant_key=participant_key
+        ).first()
         group_answer, group_answer_correct = _group_response(group.id, question.id)
         payload.append(
             {

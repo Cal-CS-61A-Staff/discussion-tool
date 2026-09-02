@@ -71,17 +71,20 @@ def create_app(config_object=None):
     from server.blueprints.groups import groups_bp
     from server.blueprints.sections import sections_bp
     from server.blueprints.ta import ta_bp
+    from server.blueprints.w import w_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(sections_bp, url_prefix="/api")
     app.register_blueprint(groups_bp, url_prefix="/api/groups")
     app.register_blueprint(ta_bp, url_prefix="/api/worksheets")
     app.register_blueprint(admin_bp, url_prefix="/api")
+    app.register_blueprint(w_bp, url_prefix="/api/w")
 
     _register_health_route(app)
     _register_seed_command(app)
     _register_create_admin_command(app)
     _register_import_roster_command(app)
+    _register_retention_command(app)
     _register_spa_routes(app)
 
     return app
@@ -132,6 +135,24 @@ def _register_create_admin_command(app):
             db.session.add(user)
             db.session.commit()
             print(f"Created admin user '{display_name}' (id={user.id}).")
+
+
+def _register_retention_command(app):
+    @app.cli.command("retention-run")
+    @click.option("--snapshot-only", is_flag=True, help="Write participation CSVs but purge nothing.")
+    def retention_run_command(snapshot_only):
+        """Snapshot participation to CSV, then hard-delete any group idle
+        longer than SESSION_DATA_TTL_DAYS. Run daily via
+        deploy/systemd/cs61a-retention.{service,timer}.
+        """
+        from server.services import retention
+
+        with app.app_context():
+            summary = retention.run(snapshot_only=snapshot_only)
+            print(
+                f"Snapshots: {summary['snapshots']} file(s), {summary['rows']} row(s). "
+                f"Purged: {summary['groups_purged']} group(s)."
+            )
 
 
 def _register_import_roster_command(app):

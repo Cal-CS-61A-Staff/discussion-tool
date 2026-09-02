@@ -11,7 +11,15 @@ from server.models.section import Section
 from server.models.ta_watch import TaWatchedNumber
 from server.models.user import User
 from server.models.worksheet import Question, Worksheet
-from server.tests.conftest import add_member, login_as, make_class
+from server.tests.conftest import (
+    act_as_participant,
+    add_member,
+    join_worksheet,
+    login_as,
+    make_class,
+    new_browser,
+    publish,
+)
 
 
 def _make_class():
@@ -77,19 +85,21 @@ def test_worksheet_grades_span_every_group_in_the_class(app, client, db):
     assert {row["group_id"] for row in resp.get_json()["groups"]} == {g1.id, g2.id}
 
 
-def test_work_individually_reuses_one_solo_group_and_needs_membership(app, client, db):
-    klass, staff, _other, outsider, _admin = _make_class()
+def test_work_individually_reuses_one_solo_group(app, client, db):
+    klass, _staff, _other, _outsider, _admin = _make_class()
+    worksheet = Worksheet(class_id=klass.id, slug="w1", title="Disc 1")
+    db.session.add(worksheet)
+    db.session.flush()
+    code = publish(worksheet)
+    db.session.commit()
 
-    login_as(client, outsider)  # not a member of the class
-    assert client.post(f"/api/classes/{klass.id}/work-individually").status_code == 403
-
-    login_as(client, staff)  # staff are class members
-    resp = client.post(f"/api/classes/{klass.id}/work-individually")
+    resp = client.post(f"/api/w/{code}/work-individually", json={"name": "Solo"})
     assert resp.status_code == 200
-    group = resp.get_json()["group"]
-    assert group["is_individual"] is True
-    resp2 = client.post(f"/api/classes/{klass.id}/work-individually")
-    assert resp2.get_json()["group"]["id"] == group["id"]
+    group_id = resp.get_json()["group_id"]
+
+    resp2 = client.post(f"/api/w/{code}/work-individually", json={"name": "Solo"})
+    assert resp2.get_json()["group_id"] == group_id
+    assert Group.query.get(group_id).is_individual is True
 
 
 def test_worksheet_grades_excludes_a_staff_preview_group(app, client, db):
@@ -97,15 +107,18 @@ def test_worksheet_grades_excludes_a_staff_preview_group(app, client, db):
 
     login_as(client, staff)
     worksheet_id = client.post(f"/api/classes/{klass.id}/worksheets", json={"title": "Disc"}).get_json()["worksheet"]["id"]
-    staff_group_id = client.post(f"/api/classes/{klass.id}/work-individually").get_json()["group"]["id"]
-
-    student = User(display_name="Student", role="student")
-    db.session.add(student)
-    db.session.flush()
-    add_member(student, klass, "student")
+    worksheet = db.session.get(Worksheet, worksheet_id)
+    code = publish(worksheet)
     db.session.commit()
-    login_as(client, student)
-    student_group_id = client.post(f"/api/classes/{klass.id}/work-individually").get_json()["group"]["id"]
+
+    # Staff previewing via the share link get a "staff-" participant key.
+    staff_group_id = client.post(f"/api/w/{code}/work-individually", json={"name": "TA"}).get_json()["group_id"]
+
+    # A real student, no account, fresh session.
+    new_browser(client)
+    student_group_id = client.post(
+        f"/api/w/{code}/work-individually", json={"name": "Student"}
+    ).get_json()["group_id"]
 
     login_as(client, staff)
     ids = {row["group_id"] for row in client.get(f"/api/worksheets/{worksheet_id}/grades").get_json()["groups"]}
@@ -156,77 +169,38 @@ def test_only_an_admin_can_archive_a_class(app, client, db):
     assert resp.get_json()["klass"]["is_archived"] is True
 
 
-def test_class_worksheets_includes_a_students_own_rating(app, client, db):
-    klass, staff, _other, _outsider, _admin = _make_class()
-    worksheet = Worksheet(class_id=klass.id, slug="w1", title="Disc 1", is_published=True)
+def test_join_by_number_creates_one_shared_group(app, client, db):
+    klass, _staff, _other, _outsider, _admin = _make_class()
+    worksheet = Worksheet(class_id=klass.id, slug="w1", title="Disc 1")
     db.session.add(worksheet)
     db.session.flush()
-    question = Question(worksheet_id=worksheet.id, order_index=0, title="Q1", prompt="p")
-    db.session.add(question)
-    db.session.flush()
-
-    student = User(display_name="Student", role="student")
-    db.session.add(student)
-    db.session.flush()
-    add_member(student, klass, "student")
-    group = Group(class_id=klass.id, number=1, name="G1")
-    db.session.add(group)
-    db.session.flush()
-    db.session.add(GroupMembership(group_id=group.id, user_id=student.id))
+    code = publish(worksheet)
     db.session.commit()
 
-    login_as(client, student)
-    payload = client.get(f"/api/classes/{klass.id}/worksheets").get_json()["worksheets"][0]
-    assert payload["my_rating"] is None and payload["my_group_id"] is None
-
-    db.session.add(GroupAssignmentProgress(group_id=group.id, worksheet_id=worksheet.id, current_question_index=0))
-    db.session.add(Rating(group_id=group.id, question_id=question.id, user_id=student.id, value=5))
-    db.session.commit()
-
-    payload = client.get(f"/api/classes/{klass.id}/worksheets").get_json()["worksheets"][0]
-    assert payload["my_rating"] == 5.0 and payload["my_group_id"] == group.id
-
-
-def test_join_by_number_creates_one_shared_group_and_names_it(app, client, db):
-    klass, _staff, _other, _outsider, _admin = _make_class()
-    a = User(display_name="A", role="student")
-    b = User(display_name="B", role="student")
-    db.session.add_all([a, b])
-    db.session.flush()
-    add_member(a, klass, "student")
-    add_member(b, klass, "student")
-    db.session.commit()
-
-    login_as(client, a)
-    resp = client.post(f"/api/classes/{klass.id}/groups/join", json={"number": 7, "name": "Otters"})
+    resp = client.post(f"/api/w/{code}/join", json={"name": "A", "number": 7})
     assert resp.status_code == 200
-    group_id = resp.get_json()["group"]["id"]
-    assert resp.get_json()["group"]["name"] == "Otters"
+    group_id = resp.get_json()["group_id"]
 
-    login_as(client, b)
-    resp = client.post(f"/api/classes/{klass.id}/groups/join", json={"number": 7})
-    assert resp.get_json()["group"]["id"] == group_id  # same group
+    # a second, fresh browser on the same number lands in the same group
+    new_browser(client)
+    resp = client.post(f"/api/w/{code}/join", json={"name": "B", "number": 7})
+    assert resp.get_json()["group_id"] == group_id
 
     assert Group.query.filter_by(class_id=klass.id, number=7, is_individual=False).count() == 1
     assert GroupMembership.query.filter_by(group_id=group_id).count() == 2
 
-    # any member can rename it
+    # any member can rename the group; a non-member (fresh session) can't
     resp = client.put(f"/api/groups/{group_id}/name", json={"name": "Sea Otters"})
     assert resp.status_code == 200
     assert db.session.get(Group, group_id).name == "Sea Otters"
 
-    # a non-member can't
-    outsider = User(display_name="Nope", role="student")
-    db.session.add(outsider)
-    db.session.commit()
-    login_as(client, outsider)
-    assert client.put(f"/api/groups/{group_id}/name", json={"name": "hax"}).status_code == 403
+    new_browser(client)
+    assert client.put(f"/api/groups/{group_id}/name", json={"name": "hax"}).status_code == 401
 
 
-def test_join_by_number_requires_class_membership(app, client, db):
-    klass, _staff, _other, outsider, _admin = _make_class()
-    login_as(client, outsider)
-    assert client.post(f"/api/classes/{klass.id}/groups/join", json={"number": 3}).status_code == 403
+def test_join_requires_a_valid_share_code(app, client, db):
+    _klass, *_rest = _make_class()
+    assert client.post("/api/w/NOPE0000/join", json={"name": "X", "number": 1}).status_code == 404
 
 
 def test_watch_list_seeds_from_rooms_then_is_editable(app, client, db):
@@ -255,17 +229,15 @@ def test_dashboard_has_one_tile_per_watched_number(app, client, db):
     db.session.add(Question(worksheet_id=worksheet.id, order_index=0, title="Q", prompt="p"))
 
     # someone entered number 1
-    student = User(display_name="Stu", role="student")
-    db.session.add(student)
-    db.session.flush()
-    add_member(student, klass, "student")
     g1 = Group(class_id=klass.id, number=1, name="Group 1")
     db.session.add(g1)
     db.session.flush()
-    db.session.add(GroupMembership(group_id=g1.id, user_id=student.id))
+    db.session.add(GroupMembership(group_id=g1.id, participant_key="p-stu", participant_name="Stu"))
     db.session.commit()
 
-    login_as(client, student)
+    from server.tests.conftest import set_participant
+
+    set_participant(client, "p-stu", "Stu")
     client.get(f"/api/groups/{g1.id}/state?worksheet_id={worksheet.id}")  # mark present
 
     login_as(client, staff)

@@ -21,9 +21,7 @@ class GroupPrediction(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     group_id = db.Column(db.Integer, db.ForeignKey("groups.id"), nullable=False)
     question_id = db.Column(db.Integer, db.ForeignKey("questions.id"), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    participant_key = db.Column(db.String(40), nullable=False)
     prediction_text = db.Column(db.Text, nullable=True)
     is_correct = db.Column(db.Boolean, nullable=True)
     created_at = db.Column(db.DateTime, default=utcnow, onupdate=utcnow, index=True)
-
-    user = db.relationship("User")

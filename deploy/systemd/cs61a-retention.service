@@ -1,0 +1,12 @@
+[Unit]
+Description=Snapshot participation, then purge idle discussion session data
+After=network.target
+
+[Service]
+Type=oneshot
+User=cs61a
+Group=cs61a
+WorkingDirectory=/opt/cs61a-discussion
+EnvironmentFile=/opt/cs61a-discussion/.env
+Environment=FLASK_APP=server.app
+ExecStart=/opt/cs61a-discussion/server/.venv/bin/flask retention-run

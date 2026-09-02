@@ -22,6 +22,10 @@ class Worksheet(db.Model):
     # server/blueprints/groups.py:get_state — so a TA can build an
     # assignment out over time before releasing it to students.
     is_published = db.Column(db.Boolean, default=False, nullable=False)
+    # Short unguessable slug in the student share link (/w/<share_code>).
+    # Set the first time the worksheet is published; the only way a
+    # student (who has no account and no class enrollment) reaches it.
+    share_code = db.Column(db.String(12), unique=True, nullable=True)
 
     klass = db.relationship("Class", backref=db.backref("worksheets", lazy="dynamic"))
 

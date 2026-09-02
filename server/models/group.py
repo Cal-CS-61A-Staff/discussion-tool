@@ -3,13 +3,16 @@ from server.utils import utcnow
 
 
 class Group(db.Model):
-    """A roster group scoped to a Class, not to any one assignment or room
-    — it persists across every Worksheet in that class. Students land in
-    one by typing its `number` on an assignment's join screen (Pensive
-    style): everyone who types the same number in the same class is in the
-    same group. Per-assignment mutable state (current question, typist,
-    cooldown) lives on GroupAssignmentProgress, one row per (group,
-    worksheet).
+    """A transient work group scoped to a Class. Students land in one by
+    opening an assignment's share link and typing its `number`: everyone
+    who types the same number for the same class is in the same group.
+    Per-assignment mutable state (current question, typist, cooldown)
+    lives on GroupAssignmentProgress, one row per (group, worksheet).
+
+    Nothing here is permanent. `last_activity_at` is bumped on every poll
+    and mutation; the retention job (server/services/retention.py) snapshots
+    participation to CSV and then hard-deletes any group idle longer than
+    Config.SESSION_DATA_TTL_DAYS, along with all its child rows.
     """
 
     __tablename__ = "groups"
@@ -29,6 +32,9 @@ class Group(db.Model):
     # one, rather than a parallel solo-mode code path.
     is_individual = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=utcnow)
+    # Bumped by touch_group() on every /state poll and every mutation.
+    # Drives the retention TTL (server/services/retention.py).
+    last_activity_at = db.Column(db.DateTime, default=utcnow, nullable=False, index=True)
 
     klass = db.relationship("Class")
 
@@ -48,26 +54,37 @@ class GroupAssignmentProgress(db.Model):
     worksheet_id = db.Column(db.Integer, db.ForeignKey("worksheets.id"), nullable=False)
     current_question_index = db.Column(db.Integer, default=0, nullable=False)
     question_started_at = db.Column(db.DateTime, default=utcnow)
-    typist_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    # The participant key (server/participant.py) currently holding the pen
+    # — a signed-cookie identity, not a users.id.
+    typist_key = db.Column(db.String(40), nullable=True)
     typist_claimed_at = db.Column(db.DateTime, nullable=True)
     # Source of truth for the group-wide run cooldown, on this assignment.
     last_attempt_at = db.Column(db.DateTime, nullable=True)
 
 
 class GroupMembership(db.Model):
+    """One anonymous participant's membership of a group. `participant_key`
+    is a random per-session token minted into a signed cookie
+    (server/participant.py) — there is no users row for a student.
+    `participant_name` is the self-entered display name and is the only
+    place a name is stored; every other participant-scoped table
+    (Rating, ScratchCode, TestRun, ...) carries just the key and resolves
+    the name by joining here on (group_id, participant_key).
+    """
+
     __tablename__ = "group_memberships"
-    __table_args__ = (db.UniqueConstraint("group_id", "user_id"),)
+    __table_args__ = (db.UniqueConstraint("group_id", "participant_key"),)
 
     id = db.Column(db.Integer, primary_key=True)
     group_id = db.Column(db.Integer, db.ForeignKey("groups.id"), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    participant_key = db.Column(db.String(40), nullable=False, index=True)
+    participant_name = db.Column(db.String(80), nullable=False, default="")
     # Bumped on every /state poll — doubles as a free heartbeat used to
     # auto-release an inactive typist (see services/typist.py) and to show
-    # a TA who's currently logged into each watched number.
+    # a TA who's currently on each watched number.
     last_seen_at = db.Column(db.DateTime, default=utcnow)
     joined_at = db.Column(db.DateTime, default=utcnow)
 
-    user = db.relationship("User")
     group = db.relationship("Group")
 
 
@@ -87,23 +104,21 @@ class GroupQuestionState(db.Model):
 
 
 class ScratchCode(db.Model):
-    """A student's own private practice code for one question — unlike
+    """A participant's own private practice code for one question — unlike
     GroupQuestionState.code (the group's shared, collaborative buffer),
-    this is per-user, not per-group, and never visible to groupmates.
-    Persisted server-side (not just browser localStorage) specifically so
-    it survives being viewed later — on the History page's "View work" for
-    a completed assignment, or when browsing back to an earlier unlocked
-    question mid-assignment (server/services/serializers.py:
-    build_group_work) — rather than vanishing the moment a different
-    browser/device is used or site data is cleared.
+    this is per-participant, not per-group, and never visible to
+    groupmates. Persisted server-side (not just browser localStorage) so
+    it survives being viewed later when browsing back to an earlier
+    unlocked question mid-assignment (server/services/serializers.py:
+    build_group_work), within the retention window.
     """
 
     __tablename__ = "scratch_codes"
-    __table_args__ = (db.UniqueConstraint("group_id", "question_id", "user_id"),)
+    __table_args__ = (db.UniqueConstraint("group_id", "question_id", "participant_key"),)
 
     id = db.Column(db.Integer, primary_key=True)
     group_id = db.Column(db.Integer, db.ForeignKey("groups.id"), nullable=False)
     question_id = db.Column(db.Integer, db.ForeignKey("questions.id"), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    participant_key = db.Column(db.String(40), nullable=False, index=True)
     code = db.Column(db.Text, default="")
     updated_at = db.Column(db.DateTime, default=utcnow, onupdate=utcnow)

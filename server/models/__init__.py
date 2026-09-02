@@ -4,7 +4,6 @@ from server.models.section import Section, SectionCoTeacher
 from server.models.worksheet import Worksheet, Question
 from server.models.group import Group, GroupAssignmentProgress, GroupMembership, GroupQuestionState, ScratchCode
 from server.models.ta_watch import TaWatchedNumber
-from server.models.attempt import Attempt
 from server.models.group_prediction import GroupPrediction
 from server.models.question_response import QuestionResponse
 from server.models.rating import Rating
@@ -24,7 +23,6 @@ __all__ = [
     "GroupQuestionState",
     "ScratchCode",
     "TaWatchedNumber",
-    "Attempt",
     "GroupPrediction",
     "QuestionResponse",
     "Rating",

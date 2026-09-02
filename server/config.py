@@ -1,6 +1,7 @@
 import os
 
 SERVER_DIR = os.path.abspath(os.path.dirname(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(SERVER_DIR, os.pardir))
 INSTANCE_DIR = os.path.join(SERVER_DIR, "instance")
 
 
@@ -29,6 +30,19 @@ class Config:
     # No progress on the current question for this long => "stuck" on the TA dashboard.
     STUCK_THRESHOLD_SECONDS = 360
     MAX_GROUP_SIZE = 4
+
+    # Students are anonymous and everything they touch is transient. The
+    # retention job (server/services/retention.py, run daily via
+    # deploy/systemd/cs61a-retention.timer) snapshots participation to a
+    # CSV under RETENTION_SNAPSHOT_DIR, then hard-deletes any group idle
+    # (no poll or mutation) longer than this many days.
+    SESSION_DATA_TTL_DAYS = int(os.environ.get("SESSION_DATA_TTL_DAYS", "14"))
+    RETENTION_SNAPSHOT_DIR = os.environ.get(
+        "RETENTION_SNAPSHOT_DIR", os.path.join(REPO_ROOT, "var", "snapshots")
+    )
+    # Anonymous participant cookies should outlast a single browser session
+    # so a student who closes the tab mid-discussion can resume.
+    PERMANENT_SESSION_LIFETIME = 60 * 60 * 24 * 3
 
     # Grading runs in the student's browser now (Pyodide — client/src/pyodide/),
     # so there's no Docker, no grading queue, and no server-side per-run rate

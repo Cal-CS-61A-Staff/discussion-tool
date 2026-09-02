@@ -18,8 +18,24 @@ import { gradeCounterexample } from '../pyodide/counterexample.js';
 import { usePolling } from '../hooks/usePolling.js';
 
 export default function StudentWorksheetPage() {
-  const { classId, worksheetId, groupId } = useParams();
+  const { classId, worksheetId: worksheetParam, groupId, code } = useParams();
   const navigate = useNavigate();
+
+  // Two entry points render this page: the staff "view as student" route
+  // (/classes/:classId/assignments/:worksheetId/groups/:groupId, worksheet
+  // id in the URL) and the anonymous student share link (/w/:code/g/:groupId,
+  // where we resolve the worksheet id from the code).
+  const [resolvedWorksheetId, setResolvedWorksheetId] = useState(null);
+  useEffect(() => {
+    if (!code) return;
+    import('../api/w.js').then(({ resolve }) =>
+      resolve(code)
+        .then((res) => setResolvedWorksheetId(res.worksheet_id))
+        .catch(() => setResolvedWorksheetId(null))
+    );
+  }, [code]);
+  const worksheetId = worksheetParam || resolvedWorksheetId;
+  const backTo = code ? `/w/${code}` : `/classes/${classId}/assignments/${worksheetParam}`;
 
   const [localCode, setLocalCode] = useState('');
   const [actionError, setActionError] = useState('');
@@ -52,7 +68,10 @@ export default function StudentWorksheetPage() {
     (signal) => groupsApi.getGroupState(groupId, worksheetId, signal),
     [groupId, worksheetId]
   );
-  const { data, error, loading, refetch } = usePolling(fetchState, { intervalMs: 2500 });
+  const { data, error, loading, refetch } = usePolling(fetchState, {
+    intervalMs: 2500,
+    enabled: Boolean(worksheetId),
+  });
 
   // In-app navigation away from this group/worksheet (Back, another
   // assignment, etc.) drops the pen and active-member status immediately
@@ -60,6 +79,7 @@ export default function StudentWorksheetPage() {
   // on a closed tab or refresh — no reliable way to guarantee that in a
   // browser — so the stale-poll fallback still has to exist regardless.
   useEffect(() => {
+    if (!worksheetId) return undefined;
     return () => {
       groupsApi.leaveGroup(groupId, worksheetId).catch(() => {});
     };
@@ -161,9 +181,7 @@ export default function StudentWorksheetPage() {
   };
 
   const backToAssignment = () =>
-    data.group.is_individual
-      ? navigate('/assignments')
-      : navigate(`/classes/${classId}/assignments/${worksheetId}`);
+    code ? navigate(backTo) : data.group.is_individual ? navigate('/assignments') : navigate(backTo);
 
   const breadcrumb = (
     <div className="breadcrumb-row">
@@ -174,12 +192,18 @@ export default function StudentWorksheetPage() {
           backToAssignment();
         }}
       >
-        ← Back to assignment
+        ← {code ? 'Back' : 'Back to assignment'}
       </a>
       <span>·</span>
       <span>{data.worksheet_title}</span>
       <span>·</span>
       <span>{data.group.name}</span>
+      {code && (
+        <>
+          <span>·</span>
+          <a href={`/api/w/${code}/g/${groupId}/export`}>Download my copy</a>
+        </>
+      )}
     </div>
   );
 

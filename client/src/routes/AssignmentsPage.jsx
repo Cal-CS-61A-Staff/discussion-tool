@@ -102,21 +102,13 @@ export default function AssignmentsPage() {
     }
   };
 
-  const viewWork = (w) => navigate(`/groups/${w.my_group_id}/worksheets/${w.id}/work`);
-
-  // Drops a staff member into the same solo worksheet flow a student gets,
-  // to sanity-check an assignment before publishing it.
-  const handleViewAsStudent = async (classId, worksheetId) => {
-    setViewingAsStudentId(worksheetId);
-    setError('');
-    try {
-      const res = await sectionsApi.workIndividually(classId);
-      navigate(`/classes/${classId}/assignments/${worksheetId}/groups/${res.group.id}`);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setViewingAsStudentId(null);
-    }
+  // Drops a staff member into the same share-link flow a student gets, to
+  // sanity-check an assignment before publishing it. Staff keep a stable
+  // "staff-" participant key (server/participant.py), and their solo group
+  // is excluded from grade rollups.
+  const handleViewAsStudent = (worksheet) => {
+    if (worksheet.share_code) navigate(`/w/${worksheet.share_code}`);
+    else setError('Publish this assignment first to preview it as a student.');
   };
 
   // Assignments belong to a class. This lands on AssignmentPage first (where
@@ -206,7 +198,7 @@ export default function AssignmentsPage() {
                               className="admin-action"
                               onClick={(e) => {
                                 e.preventDefault();
-                                if (!viewingAsStudent) handleViewAsStudent(c.id, w.id);
+                                if (!viewingAsStudent) handleViewAsStudent(w);
                               }}
                             >
                               {viewingAsStudent ? 'Starting…' : 'View as student'}
@@ -266,45 +258,9 @@ export default function AssignmentsPage() {
                 </table>
               </div>
             ) : (
-              <>
-                {worksheets.length === 0 && (
-                  <p style={{ color: 'var(--muted)', fontSize: 13 }}>Nothing released yet.</p>
-                )}
-                {[...worksheets]
-                  .sort((a, b) => Number(Boolean(b.my_group_id)) - Number(Boolean(a.my_group_id)))
-                  .map((w) => (
-                    <div className="panel panel-clickable" key={w.id} onClick={() => goToAssignment(c.id, w.id)}>
-                      <div
-                        className="panel-heading"
-                        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-                      >
-                        <h4 style={{ margin: 0 }}>{w.title}</h4>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                          <div style={{ textAlign: 'right' }}>
-                            <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase' }}>
-                              Your confidence
-                            </div>
-                            <div style={{ fontSize: 18, fontWeight: 600 }}>
-                              {w.my_rating != null ? `${w.my_rating} / 5` : w.my_group_id ? 'Not rated' : 'Not started'}
-                            </div>
-                          </div>
-                          {w.my_group_id && (
-                            <button
-                              type="button"
-                              className="btn btn-sm"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                viewWork(w);
-                              }}
-                            >
-                              View work
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-              </>
+              <p style={{ color: 'var(--muted)', fontSize: 13 }}>
+                Students open the share link their TA hands out — there’s nothing to pick here.
+              </p>
             )}
 
             {staff && (

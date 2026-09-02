@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the discussion retention sweep daily
+
+[Timer]
+OnCalendar=daily
+# If the box was off at the scheduled time, run the missed sweep on next
+# boot rather than skipping a day of retention.
+Persistent=true
+Unit=cs61a-retention.service
+
+[Install]
+WantedBy=timers.target

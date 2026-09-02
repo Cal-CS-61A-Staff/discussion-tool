@@ -95,17 +95,6 @@ def is_class_staff(user, klass):
     )
 
 
-def is_class_member(user, klass):
-    """True if `user` belongs to `klass` at all (student or staff) — the
-    gate for the student-facing surfaces (opening an assignment, joining a
-    group by number)."""
-    if user is None:
-        return False
-    if user.role == "admin":
-        return True
-    return ClassMembership.query.filter_by(user_id=user.id, class_id=klass.id).first() is not None
-
-
 def ta_owns_section(user, section):
     """Kept as a name; now just "is `user` staff of this room's class".
     `Section` is a Room and no longer confers access on its own — the
@@ -144,9 +133,3 @@ def require_class_access(user, klass):
     return None
 
 
-def require_class_membership(user, klass):
-    """(response, status) to short-circuit with, or None if `user` belongs
-    to `klass` (student or staff) — for the student-facing surfaces."""
-    if not is_class_member(user, klass):
-        return jsonify(error="you're not in this class — enter its join code first"), 403
-    return None

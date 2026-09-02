@@ -14,6 +14,7 @@ const AssignmentsPage = lazy(() => import('./routes/AssignmentsPage.jsx'));
 const ClassSectionsPage = lazy(() => import('./routes/ClassSectionsPage.jsx'));
 const DiscussionsPage = lazy(() => import('./routes/DiscussionsPage.jsx'));
 const HomePage = lazy(() => import('./routes/HomePage.jsx'));
+const JoinPage = lazy(() => import('./routes/JoinPage.jsx'));
 const LoginPage = lazy(() => import('./routes/LoginPage.jsx'));
 const StudentWorksheetPage = lazy(() => import('./routes/StudentWorksheetPage.jsx'));
 const TaAssignmentEditorPage = lazy(() => import('./routes/TaAssignmentEditorPage.jsx'));
@@ -32,6 +33,9 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      {/* Anonymous student entry — no auth, no Layout chrome. */}
+      <Route path="/w/:code" element={<JoinPage />} />
+      <Route path="/w/:code/g/:groupId" element={<StudentWorksheetPage />} />
       <Route
         path="/"
         element={

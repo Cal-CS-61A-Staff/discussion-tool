@@ -17,31 +17,12 @@ export default function HomePage() {
   const [newCourseName, setNewCourseName] = useState('');
   const [creating, setCreating] = useState(false);
 
-  const [joinCode, setJoinCode] = useState('');
-  const [joining, setJoining] = useState(false);
-  const [joinError, setJoinError] = useState('');
-
   const load = () => {
     sectionsApi
       .listClasses()
       .then((res) => setClasses(res.classes))
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  };
-
-  const handleJoinClass = async (e) => {
-    e.preventDefault();
-    setJoining(true);
-    setJoinError('');
-    try {
-      await sectionsApi.joinClass(joinCode.trim());
-      setJoinCode('');
-      load();
-    } catch (err) {
-      setJoinError(err.message);
-    } finally {
-      setJoining(false);
-    }
   };
 
   useEffect(() => {
@@ -77,22 +58,11 @@ export default function HomePage() {
         <div>
           <h1>CS 61A Discussion</h1>
           <p>
-            Welcome, {user.display_name}. Pick a class below, or enter a join code to add one.
+            Welcome, {user.display_name}. Pick a class below.{' '}
+            {activeClasses.length === 0 && !isAdmin(user) && (
+              <>Students: open the link your TA gave you — you don’t sign in here.</>
+            )}
           </p>
-          <form onSubmit={handleJoinClass} style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-            <input
-              className="form-control"
-              style={{ maxWidth: 200 }}
-              value={joinCode}
-              onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-              placeholder="Class join code"
-              disabled={joining}
-            />
-            <button className="btn btn-sm" type="submit" disabled={joining || !joinCode.trim()}>
-              {joining ? 'Joining…' : 'Join a class'}
-            </button>
-          </form>
-          {joinError && <p style={{ color: 'var(--danger, #d9534f)', fontSize: 13, margin: '6px 0 0' }}>{joinError}</p>}
         </div>
       </div>
 

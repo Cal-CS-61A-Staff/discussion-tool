@@ -34,9 +34,19 @@ export default function TaGradesPage() {
         </a>
       </div>
       <div className="page-header-row">
-        <h1>Grades</h1>
-        <p>Each group&apos;s latest test run per question.</p>
+        <div>
+          <h1>Grades</h1>
+          <p>Each group&apos;s latest test run per question.</p>
+        </div>
+        <a className="btn btn-sm" href={`/api/worksheets/${worksheetId}/participation.csv`}>
+          Download participation CSV
+        </a>
       </div>
+
+      <p style={{ fontSize: 13, color: 'var(--muted)', marginTop: -6 }}>
+        Session data (code, answers, ratings) is deleted ~2 weeks after a group goes
+        inactive — download the CSV before then to keep a participation record.
+      </p>
 
       {error && <div className="alert alert-danger">{error}</div>}
 

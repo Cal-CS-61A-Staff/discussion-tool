@@ -21,7 +21,7 @@ class TestRun(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     group_id = db.Column(db.Integer, db.ForeignKey("groups.id"), nullable=False)
     question_id = db.Column(db.Integer, db.ForeignKey("questions.id"), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    participant_key = db.Column(db.String(40), nullable=False)
     source = db.Column(db.String(10), nullable=False)  # 'shared' | 'scratch'
     # Required before a run is accepted (server/blueprints/groups.py) — a
     # commit-to-a-guess step ahead of every "Run tests", not compared
@@ -34,5 +34,3 @@ class TestRun(db.Model):
     total_count = db.Column(db.Integer, nullable=True)
     results_json = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=utcnow, index=True)
-
-    user = db.relationship("User")

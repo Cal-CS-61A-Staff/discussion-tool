@@ -9,18 +9,20 @@ class Class(db.Model):
     Worksheets/assignments (server/models/worksheet.py), shared across
     every section under it.
 
-    `join_code` is what scopes a student to a class: they enter it once
-    (POST /api/classes/join) and get a ClassMembership row. There is no
-    email roster anymore — see ClassMembership below.
+    Students have no relationship to a Class at all — they reach an
+    assignment by its per-worksheet share link (Worksheet.share_code,
+    server/blueprints/w.py) and are anonymous (server/participant.py).
+    `join_code` is retained only as a stable per-class identifier shown to
+    staff; it no longer gates anything.
     """
 
     __tablename__ = "classes"
 
     id = db.Column(db.Integer, primary_key=True)
     course_name = db.Column(db.String(40), nullable=False)
-    # Short, human-typable code a student enters once to join the class.
-    # Generated on create (server/utils.py:generate_join_code); unique so
-    # POST /api/classes/join can resolve it to exactly one class.
+    # Legacy: was a student-typable join code. Kept (still generated on
+    # create, still unique) as a stable staff-facing class identifier;
+    # nothing resolves a student through it anymore.
     join_code = db.Column(db.String(12), unique=True, nullable=False)
     created_at = db.Column(db.DateTime, default=utcnow)
     # TA/admin-toggled (not inferred from dates — there's no term/semester
@@ -29,16 +31,12 @@ class Class(db.Model):
 
 
 class ClassMembership(db.Model):
-    """One row per (user, class) — the per-class role. Replaces the old
-    email-keyed ClassEnrollment: a user gains a 'student' membership by
-    entering the class's join_code, and an existing staff member or admin
-    can grant/raise someone to 'staff' for a class explicitly
-    (server/blueprints/sections.py:add_class_staff).
-
-    This is what makes "88C staff, 61A student at the same time" work —
-    role is per class, not the global User.role (which now only
-    distinguishes the out-of-band 'admin' super-user). See
-    server/auth.py:is_class_staff / is_class_member.
+    """Staff-only now — one row per (staff user, class), always
+    role='staff'. Granted by an existing staff member or an admin
+    (server/blueprints/sections.py:add_class_staff). Students have no
+    membership of any kind. `role` is kept for the (unlikely) future need
+    to distinguish staff tiers; the retention migration deleted every
+    non-'staff' row. See server/auth.py:is_class_staff.
     """
 
     __tablename__ = "class_memberships"

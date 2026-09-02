@@ -19,7 +19,7 @@ from server.services import advance as advance_service
 from server.services import cooldown as cooldown_service
 from server.services import serializers
 from server.services import typist as typist_service
-from server.tests.conftest import make_class
+from server.tests.conftest import make_class, pkey
 from server.utils import utcnow
 
 
@@ -33,7 +33,7 @@ def _add_passing_shared_run(group_id, question_id, user_id):
         TestRun(
             group_id=group_id,
             question_id=question_id,
-            user_id=user_id,
+            participant_key=f"u{user_id}",
             source="shared",
             prediction_text="x",
             code_snapshot="code",
@@ -69,7 +69,7 @@ def _make_group_with_members(n=2):
         user = User(display_name=f"user{i}", role="student")
         db.session.add(user)
         db.session.flush()
-        db.session.add(GroupMembership(group_id=group.id, user_id=user.id))
+        db.session.add(GroupMembership(group_id=group.id, participant_key=f"u{user.id}", participant_name=user.display_name))
         users.append(user)
     db.session.commit()
     return group, progress, question, users
@@ -80,8 +80,8 @@ def test_assign_random_typist_picks_an_active_member(app):
 
     chosen = typist_service.assign_random_typist(progress, group.id)
 
-    assert chosen in [u.id for u in users]
-    assert progress.typist_user_id == chosen
+    assert chosen in [f"u{u.id}" for u in users]
+    assert progress.typist_key == chosen
     assert progress.typist_claimed_at is not None
 
 
@@ -90,34 +90,34 @@ def test_assign_random_typist_prefers_active_over_inactive(app):
     stale_cutoff = timedelta(seconds=Config.TYPIST_STALE_SECONDS + 30)
     # Everyone but users[0] looks like they've been gone a while.
     for u in users[1:]:
-        GroupMembership.query.filter_by(group_id=group.id, user_id=u.id).update(
+        GroupMembership.query.filter_by(group_id=group.id, participant_key=f"u{u.id}").update(
             {"last_seen_at": utcnow() - stale_cutoff}
         )
     db.session.commit()
 
     chosen = typist_service.assign_random_typist(progress, group.id)
 
-    assert chosen == users[0].id
+    assert chosen == f"u{users[0].id}"
 
 
 def test_give_up_typist_reassigns_to_someone_else(app):
     group, progress, _question, users = _make_group_with_members(3)
     typist_service.assign_random_typist(progress, group.id)
-    first_typist = progress.typist_user_id
+    first_typist = progress.typist_key
 
     ok = typist_service.give_up_typist(progress, group.id, first_typist)
 
     assert ok is True
-    assert progress.typist_user_id != first_typist
-    assert progress.typist_user_id in [u.id for u in users if u.id != first_typist]
+    assert progress.typist_key != first_typist
+    assert progress.typist_key in [f"u{u.id}" for u in users if f"u{u.id}" != first_typist]
 
 
 def test_give_up_typist_rejects_non_typist(app):
     group, progress, _question, users = _make_group_with_members(2)
     typist_service.assign_random_typist(progress, group.id)
-    non_typist = next(u for u in users if u.id != progress.typist_user_id)
+    non_typist = next(u for u in users if f"u{u.id}" != progress.typist_key)
 
-    ok = typist_service.give_up_typist(progress, group.id, non_typist.id)
+    ok = typist_service.give_up_typist(progress, group.id, f"u{non_typist.id}")
 
     assert ok is False
 
@@ -126,10 +126,10 @@ def test_give_up_typist_solo_group_keeps_the_pen(app):
     group, progress, _question, users = _make_group_with_members(1)
     typist_service.assign_random_typist(progress, group.id)
 
-    ok = typist_service.give_up_typist(progress, group.id, users[0].id)
+    ok = typist_service.give_up_typist(progress, group.id, f"u{users[0].id}")
 
     assert ok is True
-    assert progress.typist_user_id == users[0].id
+    assert progress.typist_key == f"u{users[0].id}"
 
 
 def test_give_up_typist_route_rejects_when_only_member(app, client):
@@ -137,7 +137,7 @@ def test_give_up_typist_route_rejects_when_only_member(app, client):
     user-facing rejection lives — clicking "give up the pen" with nobody
     else to hand it to should error clearly, not silently no-op.
     """
-    from server.tests.conftest import login_as
+    from server.tests.conftest import act_as_participant as login_as
 
     group, progress, _question, users = _make_group_with_members(1)
     typist_service.assign_random_typist(progress, group.id)
@@ -153,11 +153,11 @@ def test_give_up_typist_route_rejects_when_only_member(app, client):
 
 
 def test_give_up_typist_route_succeeds_with_other_members(app, client):
-    from server.tests.conftest import login_as
+    from server.tests.conftest import act_as_participant as login_as
 
     group, progress, _question, users = _make_group_with_members(2)
     typist_service.assign_random_typist(progress, group.id)
-    login_as(client, next(u for u in users if u.id == progress.typist_user_id))
+    login_as(client, next(u for u in users if f"u{u.id}" == progress.typist_key))
 
     resp = client.post(
         f"/api/groups/{group.id}/typist/give-up",
@@ -172,64 +172,64 @@ def test_leave_route_marks_inactive_immediately_and_hands_off_the_pen(app, clien
     (server/services/typist.py:leave) — the typist leaving shouldn't have
     to wait out TYPIST_STALE_SECONDS for someone else to notice.
     """
-    from server.tests.conftest import login_as
+    from server.tests.conftest import act_as_participant as login_as
 
     group, progress, _question, users = _make_group_with_members(2)
     typist_service.assign_random_typist(progress, group.id)
-    leaving_user = next(u for u in users if u.id == progress.typist_user_id)
-    other_user = next(u for u in users if u.id != progress.typist_user_id)
+    leaving_user = next(u for u in users if f"u{u.id}" == progress.typist_key)
+    other_user = next(u for u in users if f"u{u.id}" != progress.typist_key)
     login_as(client, leaving_user)
 
     resp = client.post(f"/api/groups/{group.id}/leave", json={"worksheet_id": progress.worksheet_id})
     assert resp.status_code == 200
 
-    membership = GroupMembership.query.filter_by(group_id=group.id, user_id=leaving_user.id).first()
+    membership = GroupMembership.query.filter_by(group_id=group.id, participant_key=f"u{leaving_user.id}").first()
     stale_cutoff = utcnow() - timedelta(seconds=Config.TYPIST_STALE_SECONDS)
     assert membership.last_seen_at < stale_cutoff
 
     db.session.refresh(progress)
-    assert progress.typist_user_id == other_user.id
+    assert progress.typist_key == f"u{other_user.id}"
 
 
 def test_leave_route_does_nothing_extra_when_not_the_typist(app, client):
-    from server.tests.conftest import login_as
+    from server.tests.conftest import act_as_participant as login_as
 
     group, progress, _question, users = _make_group_with_members(2)
     typist_service.assign_random_typist(progress, group.id)
-    non_typist = next(u for u in users if u.id != progress.typist_user_id)
-    original_typist_id = progress.typist_user_id
+    non_typist = next(u for u in users if f"u{u.id}" != progress.typist_key)
+    original_typist_id = progress.typist_key
     login_as(client, non_typist)
 
     resp = client.post(f"/api/groups/{group.id}/leave", json={"worksheet_id": progress.worksheet_id})
     assert resp.status_code == 200
 
     db.session.refresh(progress)
-    assert progress.typist_user_id == original_typist_id  # untouched -- they weren't holding the pen
+    assert progress.typist_key == original_typist_id  # untouched -- they weren't holding the pen
 
 
 def test_reassign_if_stale_hands_off_an_inactive_typists_pen(app):
     group, progress, _question, users = _make_group_with_members(2)
-    progress.typist_user_id = users[0].id
+    progress.typist_key = f"u{users[0].id}"
     db.session.commit()
     stale_cutoff = timedelta(seconds=Config.TYPIST_STALE_SECONDS + 30)
-    GroupMembership.query.filter_by(group_id=group.id, user_id=users[0].id).update(
+    GroupMembership.query.filter_by(group_id=group.id, participant_key=f"u{users[0].id}").update(
         {"last_seen_at": utcnow() - stale_cutoff}
     )
     db.session.commit()
 
     typist_service.reassign_if_stale(progress, group.id)
 
-    assert progress.typist_user_id == users[1].id
+    assert progress.typist_key == f"u{users[1].id}"
 
 
 def test_reassign_if_stale_leaves_an_active_typist_alone(app):
     group, progress, _question, users = _make_group_with_members(2)
-    progress.typist_user_id = users[0].id
+    progress.typist_key = f"u{users[0].id}"
     db.session.commit()
 
     typist_service.reassign_if_stale(progress, group.id)
 
-    assert progress.typist_user_id == users[0].id
+    assert progress.typist_key == f"u{users[0].id}"
 
 
 def test_cooldown_blocks_second_attempt_immediately(app):
@@ -253,7 +253,7 @@ def test_advance_requires_all_ratings(app):
     assert progress.current_question_index == 0
 
     for user in users:
-        db.session.add(Rating(group_id=group.id, question_id=question.id, user_id=user.id, value=4))
+        db.session.add(Rating(group_id=group.id, question_id=question.id, participant_key=user.id, value=4))
     db.session.commit()
 
     ok, error = advance_service.try_advance(progress, group.id, question.id)
@@ -264,7 +264,7 @@ def test_advance_requires_all_ratings(app):
 
 def test_advance_requires_a_passing_run(app):
     group, progress, question, users = _make_group_with_members(1)
-    db.session.add(Rating(group_id=group.id, question_id=question.id, user_id=users[0].id, value=5))
+    db.session.add(Rating(group_id=group.id, question_id=question.id, participant_key=f"u{users[0].id}", value=5))
     db.session.commit()
 
     # Everyone has rated, but there's no successful "Run tests" yet.
@@ -301,7 +301,7 @@ def test_try_advance_force_skips_only_the_ratings_check(app):
 
 
 def test_force_advance_route_requires_passing_tests(app, client):
-    from server.tests.conftest import login_as
+    from server.tests.conftest import act_as_participant as login_as
 
     group, progress, question, users = _make_group_with_members(2)
     login_as(client, users[0])
@@ -324,7 +324,7 @@ def test_force_advance_route_requires_passing_tests(app, client):
 
 
 def test_force_advance_route_rejected_for_a_solo_group(app, client):
-    from server.tests.conftest import login_as
+    from server.tests.conftest import act_as_participant as login_as
 
     group, progress, question, users = _make_group_with_members(1)
     login_as(client, users[0])
@@ -346,12 +346,12 @@ def test_all_members_rated_ignores_stale_members(app):
     """
     group, _progress, question, users = _make_group_with_members(2)
     present, gone = users
-    GroupMembership.query.filter_by(group_id=group.id, user_id=gone.id).update(
+    GroupMembership.query.filter_by(group_id=group.id, participant_key=f"u{gone.id}").update(
         {"last_seen_at": utcnow() - timedelta(seconds=Config.TYPIST_STALE_SECONDS + 30)}
     )
     db.session.commit()
 
-    db.session.add(Rating(group_id=group.id, question_id=question.id, user_id=present.id, value=5))
+    db.session.add(Rating(group_id=group.id, question_id=question.id, participant_key=present.id, value=5))
     db.session.commit()
 
     assert advance_service.all_members_rated(group.id, question.id) is True
@@ -364,7 +364,7 @@ def test_practice_run_route_allows_an_already_unlocked_earlier_question(app, cli
     group's own shared position moving (server/services/serializers.py:
     build_group_work, server/blueprints/groups.py:practice_run).
     """
-    from server.tests.conftest import login_as
+    from server.tests.conftest import act_as_participant as login_as
 
     group, progress, question_0, users = _make_group_with_members(1)
     question_1 = Question(worksheet_id=progress.worksheet_id, order_index=1, title="Q2", prompt="p2", expected_output="1")
@@ -386,7 +386,7 @@ def test_practice_run_route_allows_an_already_unlocked_earlier_question(app, cli
 def test_practice_run_records_a_client_graded_result(app, client):
     """Grading happens in the browser (Pyodide); practice-run just persists
     the result the client computed, without touching group progress."""
-    from server.tests.conftest import login_as
+    from server.tests.conftest import act_as_participant as login_as
     from server.models.test_run import TestRun
 
     group, progress, question_0, users = _make_group_with_members(1)
@@ -402,7 +402,7 @@ def test_practice_run_records_a_client_graded_result(app, client):
 
 
 def test_practice_run_route_rejects_a_not_yet_unlocked_question(app, client):
-    from server.tests.conftest import login_as
+    from server.tests.conftest import act_as_participant as login_as
 
     group, progress, question_0, users = _make_group_with_members(1)
     question_1 = Question(worksheet_id=progress.worksheet_id, order_index=1, title="Q2", prompt="p2", expected_output="1")
@@ -428,7 +428,7 @@ def test_build_group_work_excludes_locked_questions(app):
     db.session.commit()
     # progress.current_question_index is 0 — only question_0 is unlocked.
 
-    work = serializers.build_group_work(group, progress.worksheet_id, users[0])
+    work = serializers.build_group_work(group, progress.worksheet_id, f"u{users[0].id}")
 
     ids = [q["question_id"] for q in work["questions"]]
     assert question_0.id in ids
@@ -440,13 +440,13 @@ def test_build_group_work_lists_unlocked_questions(app):
     unlocked question with its prompt and rating."""
     group, progress, question_0, users = _make_group_with_members(1)
 
-    work = serializers.build_group_work(group, progress.worksheet_id, users[0])
+    work = serializers.build_group_work(group, progress.worksheet_id, f"u{users[0].id}")
     assert work["questions"][0]["question_id"] == question_0.id
     assert "prompt" in work["questions"][0]
 
 
 def test_update_scratch_code_route_persists_per_user(app, client):
-    from server.tests.conftest import login_as
+    from server.tests.conftest import act_as_participant as login_as
 
     group, progress, question, users = _make_group_with_members(2)
     login_as(client, users[0])
@@ -457,12 +457,12 @@ def test_update_scratch_code_route_persists_per_user(app, client):
     )
     assert resp.status_code == 200
 
-    scratch = ScratchCode.query.filter_by(group_id=group.id, question_id=question.id, user_id=users[0].id).first()
+    scratch = ScratchCode.query.filter_by(group_id=group.id, question_id=question.id, participant_key=f"u{users[0].id}").first()
     assert scratch is not None
     assert scratch.code == "def f(): return 1"
 
     # A groupmate's scratch code is independent, not overwritten.
-    other = ScratchCode.query.filter_by(group_id=group.id, question_id=question.id, user_id=users[1].id).first()
+    other = ScratchCode.query.filter_by(group_id=group.id, question_id=question.id, participant_key=f"u{users[1].id}").first()
     assert other is None
 
 
@@ -470,21 +470,21 @@ def test_group_state_includes_my_scratch_code(app):
     group, progress, question, users = _make_group_with_members(1)
     state = GroupQuestionState(group_id=group.id, question_id=question.id, code="")
     db.session.add(state)
-    db.session.add(ScratchCode(group_id=group.id, question_id=question.id, user_id=users[0].id, code="scratch code"))
+    db.session.add(ScratchCode(group_id=group.id, question_id=question.id, participant_key=f"u{users[0].id}", code="scratch code"))
     db.session.commit()
 
-    payload = serializers.build_group_state(group, progress, users[0], state)
+    payload = serializers.build_group_state(group, progress, f"u{users[0].id}", state)
 
     assert payload["my_scratch_code"] == "scratch code"
 
 
 def test_build_group_work_includes_viewers_own_scratch_code(app):
     group, progress, question, users = _make_group_with_members(2)
-    db.session.add(ScratchCode(group_id=group.id, question_id=question.id, user_id=users[0].id, code="mine"))
+    db.session.add(ScratchCode(group_id=group.id, question_id=question.id, participant_key=f"u{users[0].id}", code="mine"))
     db.session.commit()
 
-    work_mine = serializers.build_group_work(group, progress.worksheet_id, users[0])
-    work_theirs = serializers.build_group_work(group, progress.worksheet_id, users[1])
+    work_mine = serializers.build_group_work(group, progress.worksheet_id, f"u{users[0].id}")
+    work_theirs = serializers.build_group_work(group, progress.worksheet_id, f"u{users[1].id}")
 
     assert work_mine["questions"][0]["scratch_code"] == "mine"
     assert work_theirs["questions"][0]["scratch_code"] is None
@@ -500,14 +500,14 @@ def test_build_group_work_includes_starter_code_and_my_rating(app):
     """
     group, progress, question, users = _make_group_with_members(1)
 
-    work = serializers.build_group_work(group, progress.worksheet_id, users[0])
+    work = serializers.build_group_work(group, progress.worksheet_id, f"u{users[0].id}")
     assert work["questions"][0]["starter_code"] == (question.starter_code or "")
     assert work["questions"][0]["my_rating"] is None
 
-    db.session.add(Rating(group_id=group.id, question_id=question.id, user_id=users[0].id, value=3))
+    db.session.add(Rating(group_id=group.id, question_id=question.id, participant_key=f"u{users[0].id}", value=3))
     db.session.commit()
 
-    work = serializers.build_group_work(group, progress.worksheet_id, users[0])
+    work = serializers.build_group_work(group, progress.worksheet_id, f"u{users[0].id}")
     assert work["questions"][0]["my_rating"] == 3
 
 
@@ -515,7 +515,7 @@ def test_ratings_route_can_target_a_past_unlocked_question(app, client):
     """Reviewing a past question should let you change how you felt about
     *that* question specifically, independent of whatever the group's
     current question is — see the question_id branch in submit_rating."""
-    from server.tests.conftest import login_as
+    from server.tests.conftest import act_as_participant as login_as
 
     group, progress, question_0, users = _make_group_with_members(1)
     question_1 = Question(worksheet_id=progress.worksheet_id, order_index=1, title="Q2", prompt="p2", expected_output="1")
@@ -523,7 +523,7 @@ def test_ratings_route_can_target_a_past_unlocked_question(app, client):
     db.session.commit()
 
     _add_passing_shared_run(group.id, question_0.id, users[0].id)
-    db.session.add(Rating(group_id=group.id, question_id=question_0.id, user_id=users[0].id, value=5))
+    db.session.add(Rating(group_id=group.id, question_id=question_0.id, participant_key=f"u{users[0].id}", value=5))
     db.session.commit()
     ok, error = advance_service.try_advance(progress, group.id, question_0.id)
     assert ok is True, error
@@ -537,11 +537,11 @@ def test_ratings_route_can_target_a_past_unlocked_question(app, client):
     )
     assert resp.status_code == 200
 
-    rating_0 = Rating.query.filter_by(group_id=group.id, question_id=question_0.id, user_id=users[0].id).first()
+    rating_0 = Rating.query.filter_by(group_id=group.id, question_id=question_0.id, participant_key=f"u{users[0].id}").first()
     assert rating_0 is not None
     assert rating_0.value == 2
     # Didn't touch the current question's rating.
-    rating_1 = Rating.query.filter_by(group_id=group.id, question_id=question_1.id, user_id=users[0].id).first()
+    rating_1 = Rating.query.filter_by(group_id=group.id, question_id=question_1.id, participant_key=f"u{users[0].id}").first()
     assert rating_1 is None
 
     # A locked, not-yet-reached question can't be targeted this way.
@@ -562,7 +562,7 @@ def test_go_back_route_removed(app, client):
     but only registers GET, so Werkzeug rejects the method before that
     view's own 404-for-/api/ logic ever runs.
     """
-    from server.tests.conftest import login_as
+    from server.tests.conftest import act_as_participant as login_as
 
     group, progress, _question, users = _make_group_with_members(1)
     login_as(client, users[0])
@@ -587,7 +587,7 @@ def test_group_state_surfaces_last_shared_run_to_every_member(app):
     db.session.commit()
 
     # users[1] never ran anything — this is their own view.
-    payload = serializers.build_group_state(group, progress, users[1], state)
+    payload = serializers.build_group_state(group, progress, f"u{users[1].id}", state)
     last_run = payload["last_shared_run"]
     assert last_run is not None
     assert last_run["by"] == users[0].display_name
@@ -607,14 +607,14 @@ def test_group_state_includes_worksheet_title(app):
     db.session.add(state)
     db.session.commit()
 
-    payload = serializers.build_group_state(group, progress, users[0], state)
+    payload = serializers.build_group_state(group, progress, f"u{users[0].id}", state)
 
     assert payload["worksheet_title"] == "W1"
 
 
 def test_advance_cannot_double_advance(app):
     group, progress, question, users = _make_group_with_members(1)
-    db.session.add(Rating(group_id=group.id, question_id=question.id, user_id=users[0].id, value=5))
+    db.session.add(Rating(group_id=group.id, question_id=question.id, participant_key=f"u{users[0].id}", value=5))
     db.session.commit()
     _add_passing_shared_run(group.id, question.id, users[0].id)
 
@@ -662,19 +662,19 @@ def _make_completed_assignment():
     group = Group(class_id=klass.id, number=1, name="G1")
     db.session.add(group)
     db.session.flush()
-    db.session.add(GroupMembership(group_id=group.id, user_id=student.id))
-    db.session.add(GroupMembership(group_id=group.id, user_id=other_member.id))
+    db.session.add(GroupMembership(group_id=group.id, participant_key=f"u{student.id}"))
+    db.session.add(GroupMembership(group_id=group.id, participant_key=f"u{other_member.id}"))
     # current_question_index == total question count means "completed".
     db.session.add(GroupAssignmentProgress(group_id=group.id, worksheet_id=worksheet.id, current_question_index=2))
-    db.session.add(Rating(group_id=group.id, question_id=q1.id, user_id=student.id, value=4))
-    db.session.add(Rating(group_id=group.id, question_id=q2.id, user_id=student.id, value=2))
+    db.session.add(Rating(group_id=group.id, question_id=q1.id, participant_key=f"u{student.id}", value=4))
+    db.session.add(Rating(group_id=group.id, question_id=q2.id, participant_key=f"u{student.id}", value=2))
     # A teammate's rating shouldn't affect the student's own average.
-    db.session.add(Rating(group_id=group.id, question_id=q1.id, user_id=other_member.id, value=1))
+    db.session.add(Rating(group_id=group.id, question_id=q1.id, participant_key=f"u{other_member.id}", value=1))
     db.session.add(
         TestRun(
             group_id=group.id,
             question_id=q1.id,
-            user_id=student.id,
+            participant_key=f"u{student.id}",
             source="shared",
             prediction_text="x",
             code_snapshot="def f(): return 1",
@@ -689,7 +689,7 @@ def _make_completed_assignment():
 
 
 def test_get_group_work_shows_submitted_code_and_pass_state(app, client, db):
-    from server.tests.conftest import login_as
+    from server.tests.conftest import act_as_participant as login_as
 
     _klass, worksheet, group, student, _other = _make_completed_assignment()
     outsider = User(display_name="Outsider", role="student")
@@ -720,7 +720,7 @@ def test_group_routes_reject_a_worksheet_from_a_different_class(app, client):
     code through the sandboxed grader against a totally unrelated
     worksheet, just by supplying its id.
     """
-    from server.tests.conftest import login_as
+    from server.tests.conftest import act_as_participant as login_as
 
     group, _progress, _question, users = _make_group_with_members(1)
 
@@ -755,7 +755,7 @@ def test_group_routes_reject_a_worksheet_from_a_different_class(app, client):
 def test_run_tests_records_the_client_graded_result(app, client):
     """Grading runs in the browser (Pyodide); run_tests just persists the
     result the client sends onto a TestRun row."""
-    from server.tests.conftest import login_as
+    from server.tests.conftest import act_as_participant as login_as
     from server.models.test_run import TestRun
 
     group, progress, question, users = _make_group_with_members(1)

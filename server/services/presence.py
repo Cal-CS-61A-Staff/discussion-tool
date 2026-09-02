@@ -26,25 +26,25 @@ def _stale_cutoff():
     return utcnow() - timedelta(seconds=Config.TYPIST_STALE_SECONDS)
 
 
-def all_members(group_id, exclude_user_id=None):
+def all_members(group_id, exclude_key=None):
     query = GroupMembership.query.filter_by(group_id=group_id)
-    if exclude_user_id is not None:
-        query = query.filter(GroupMembership.user_id != exclude_user_id)
+    if exclude_key is not None:
+        query = query.filter(GroupMembership.participant_key != exclude_key)
     return query.all()
 
 
-def active_members(group_id, exclude_user_id=None):
+def active_members(group_id, exclude_key=None):
     query = GroupMembership.query.filter(
         GroupMembership.group_id == group_id,
         GroupMembership.last_seen_at >= _stale_cutoff(),
     )
-    if exclude_user_id is not None:
-        query = query.filter(GroupMembership.user_id != exclude_user_id)
+    if exclude_key is not None:
+        query = query.filter(GroupMembership.participant_key != exclude_key)
     return query.all()
 
 
-def active_or_all_members(group_id, exclude_user_id=None):
-    return active_members(group_id, exclude_user_id) or all_members(group_id, exclude_user_id)
+def active_or_all_members(group_id, exclude_key=None):
+    return active_members(group_id, exclude_key) or all_members(group_id, exclude_key)
 
 
 def active_member_count(group_id):

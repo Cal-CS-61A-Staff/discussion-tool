@@ -14,8 +14,14 @@ from server.auth import (
 )
 from server.blueprints.sections import _serialize_class, _serialize_section
 from server.extensions import db
-from server.models.attempt import Attempt
-from server.models.group import Group, GroupAssignmentProgress, GroupMembership, GroupQuestionState
+from server.models.group import (
+    Group,
+    GroupAssignmentProgress,
+    GroupMembership,
+    GroupQuestionState,
+    ScratchCode,
+)
+from server.models.group_prediction import GroupPrediction
 from server.models.klass import Class, ClassMembership
 from server.models.question_response import QuestionResponse
 from server.models.rating import Rating
@@ -200,10 +206,8 @@ def _delete_class_groups_cascade(class_id):
     group_ids = [g.id for g in Group.query.filter_by(class_id=class_id).with_entities(Group.id).all()]
     if not group_ids:
         return
-    TestRun.query.filter(TestRun.group_id.in_(group_ids)).delete(synchronize_session=False)
-    Attempt.query.filter(Attempt.group_id.in_(group_ids)).delete(synchronize_session=False)
-    Rating.query.filter(Rating.group_id.in_(group_ids)).delete(synchronize_session=False)
-    GroupQuestionState.query.filter(GroupQuestionState.group_id.in_(group_ids)).delete(synchronize_session=False)
+    for model in (TestRun, Rating, GroupQuestionState, ScratchCode, QuestionResponse, GroupPrediction):
+        model.query.filter(model.group_id.in_(group_ids)).delete(synchronize_session=False)
     GroupAssignmentProgress.query.filter(GroupAssignmentProgress.group_id.in_(group_ids)).delete(
         synchronize_session=False
     )
@@ -223,12 +227,8 @@ def _delete_worksheets_cascade(worksheet_ids):
         for q in Question.query.filter(Question.worksheet_id.in_(worksheet_ids)).with_entities(Question.id).all()
     ]
     if question_ids:
-        TestRun.query.filter(TestRun.question_id.in_(question_ids)).delete(synchronize_session=False)
-        Attempt.query.filter(Attempt.question_id.in_(question_ids)).delete(synchronize_session=False)
-        Rating.query.filter(Rating.question_id.in_(question_ids)).delete(synchronize_session=False)
-        GroupQuestionState.query.filter(GroupQuestionState.question_id.in_(question_ids)).delete(
-            synchronize_session=False
-        )
+        for model in (TestRun, Rating, GroupQuestionState, ScratchCode, QuestionResponse, GroupPrediction):
+            model.query.filter(model.question_id.in_(question_ids)).delete(synchronize_session=False)
     Question.query.filter(Question.worksheet_id.in_(worksheet_ids)).delete(synchronize_session=False)
     GroupAssignmentProgress.query.filter(GroupAssignmentProgress.worksheet_id.in_(worksheet_ids)).delete(
         synchronize_session=False
@@ -420,6 +420,8 @@ def update_worksheet(worksheet_id):
     worksheet.description = (data.get("description") or "").strip()
     if "is_published" in data:
         worksheet.is_published = bool(data.get("is_published"))
+        if worksheet.is_published:
+            _ensure_share_code(worksheet)
     db.session.commit()
     return jsonify(worksheet=_serialize_worksheet(worksheet))
 
@@ -432,6 +434,7 @@ def publish_worksheet(worksheet_id):
     if error:
         return error
     worksheet.is_published = True
+    _ensure_share_code(worksheet)
     db.session.commit()
     return jsonify(worksheet=_serialize_worksheet(worksheet))
 
@@ -709,10 +712,8 @@ def delete_question(question_id):
         return error
     worksheet_id = question.worksheet_id
 
-    TestRun.query.filter_by(question_id=question.id).delete()
-    Attempt.query.filter_by(question_id=question.id).delete()
-    Rating.query.filter_by(question_id=question.id).delete()
-    GroupQuestionState.query.filter_by(question_id=question.id).delete()
+    for model in (TestRun, Rating, GroupQuestionState, ScratchCode, QuestionResponse, GroupPrediction):
+        model.query.filter_by(question_id=question.id).delete()
     db.session.delete(question)
     db.session.commit()
 
@@ -771,6 +772,53 @@ def list_questions(worksheet_id):
     return jsonify(questions=[_serialize_question_detail(q) for q in questions])
 
 
+@admin_bp.get("/worksheets/<int:worksheet_id>/participation.csv")
+@role_required("ta")
+def participation_csv(worksheet_id):
+    """The durable participation record: one row per (group, participant),
+    computed live for groups still present and merged with the on-disk
+    snapshot for any the retention job has already purged
+    (server/services/retention.py). Rows disappear
+    Config.SESSION_DATA_TTL_DAYS days after a group goes idle.
+    """
+    import csv
+    import io
+    import os
+
+    from flask import Response
+
+    from server.config import Config
+    from server.services import retention
+
+    worksheet = Worksheet.query.get_or_404(worksheet_id)
+    error = require_class_access(get_current_user(), worksheet.klass)
+    if error:
+        return error
+
+    rows = {
+        (r["group_number"], r["participant_name"]): r for r in retention.participation_rows(worksheet)
+    }
+    snapshot_path = os.path.join(
+        Config.RETENTION_SNAPSHOT_DIR,
+        retention._slug(worksheet.klass.course_name),
+        f"{retention._slug(worksheet.slug)}.csv",
+    )
+    if os.path.exists(snapshot_path):
+        with open(snapshot_path) as f:
+            for r in csv.DictReader(f):
+                rows.setdefault((r["group_number"], r["participant_name"]), r)
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=retention.CSV_COLUMNS)
+    writer.writeheader()
+    writer.writerows(sorted(rows.values(), key=lambda r: (str(r["group_number"]), r["participant_name"])))
+    return Response(
+        buf.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{worksheet.slug}-participation.csv"'},
+    )
+
+
 @admin_bp.get("/worksheets/<int:worksheet_id>/grades")
 @role_required("ta")
 def worksheet_grades(worksheet_id):
@@ -789,16 +837,17 @@ def worksheet_grades(worksheet_id):
     # Groups are class-scoped now — every group in the class is "working on"
     # any of its assignments.
     groups = Group.query.filter_by(class_id=worksheet.class_id).all()
-    # Exclude a staff member's own "View as student" solo group
-    # (work_individually, server/blueprints/sections.py) — a sanity-check
-    # run through an assignment isn't a real student attempt. A real
-    # student working solo still counts.
+    # Exclude a staff member's own "View as student" solo group — a
+    # sanity-check run through an assignment isn't a real student attempt.
+    # Staff who enter the student flow get a participant key prefixed
+    # "staff-" (server/participant.py). A real student working solo still
+    # counts.
     staff_solo_ids = set()
     for g in groups:
         if not g.is_individual:
             continue
         member = GroupMembership.query.filter_by(group_id=g.id).first()
-        if member is not None and is_class_staff(member.user, worksheet.klass):
+        if member is not None and (member.participant_key or "").startswith("staff-"):
             staff_solo_ids.add(g.id)
     groups = [g for g in groups if g.id not in staff_solo_ids]
 
@@ -850,6 +899,18 @@ def _slugify(title):
     return slug.strip("-") or "assignment"
 
 
+def _ensure_share_code(worksheet):
+    """The student share link's slug (Worksheet.share_code). Minted the
+    first time a worksheet is published and kept stable thereafter — it's
+    the only way a student (no account, no enrollment) reaches it."""
+    if worksheet.share_code:
+        return
+    code = generate_join_code(10)
+    while Worksheet.query.filter_by(share_code=code).first() is not None:
+        code = generate_join_code(10)
+    worksheet.share_code = code
+
+
 def _serialize_worksheet(worksheet):
     return {
         "id": worksheet.id,
@@ -858,6 +919,7 @@ def _serialize_worksheet(worksheet):
         "title": worksheet.title,
         "description": worksheet.description,
         "is_published": worksheet.is_published,
+        "share_code": worksheet.share_code,
     }
 
 

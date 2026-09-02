@@ -6,10 +6,10 @@ from flask import Blueprint, jsonify, request
 from server.auth import (
     get_current_user,
     is_class_staff,
-    login_required,
     require_class_access,
     role_required,
 )
+from server.participant import current_participant_key, participant_required
 from server.extensions import db
 from server.models.group import Group, GroupAssignmentProgress, GroupMembership, GroupQuestionState, ScratchCode
 from server.models.group_prediction import GroupPrediction
@@ -30,10 +30,16 @@ def _load_group(group_id):
     return Group.query.get(group_id)
 
 
-def _membership(group_id, user_id):
-    if user_id is None:
+def _membership(group_id, participant_key):
+    if participant_key is None:
         return None
-    return GroupMembership.query.filter_by(group_id=group_id, user_id=user_id).first()
+    return GroupMembership.query.filter_by(group_id=group_id, participant_key=participant_key).first()
+
+
+def touch_group(group_id):
+    """Bump last_activity_at so the retention job's TTL clock restarts.
+    Called from GET /state and from every mutating route below."""
+    Group.query.filter_by(id=group_id).update({"last_activity_at": utcnow()})
 
 
 def _worksheet_id_from_args():
@@ -135,11 +141,11 @@ def _clean_run_results(raw):
     }
 
 
-def _record_test_run(group_id, question_id, user_id, source, code, results):
+def _record_test_run(group_id, question_id, participant_key, source, code, results):
     run = TestRun(
         group_id=group_id,
         question_id=question_id,
-        user_id=user_id,
+        participant_key=participant_key,
         source=source,
         prediction_text="",
         code_snapshot=code,
@@ -154,7 +160,7 @@ def _record_test_run(group_id, question_id, user_id, source, code, results):
 
 
 @groups_bp.get("/<int:group_id>/state")
-@login_required
+@participant_required
 def get_state(group_id):
     group = _load_group(group_id)
     if group is None:
@@ -164,18 +170,18 @@ def get_state(group_id):
     if worksheet_id is None:
         return jsonify(error="worksheet_id query param is required"), 400
 
-    user = get_current_user()
-    membership = _membership(group_id, user.id)
-    if membership is None and not is_class_staff(user, group.klass):
+    key = current_participant_key()
+    membership = _membership(group_id, key)
+    if membership is None:
         return jsonify(error="not a member of this group"), 403
 
-    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    error = _worksheet_for_group_or_error(group, worksheet_id, get_current_user())
     if error:
         return error
 
-    if membership is not None:
-        membership.last_seen_at = utcnow()
-        db.session.commit()
+    membership.last_seen_at = utcnow()
+    touch_group(group_id)
+    db.session.commit()
 
     progress = _get_or_create_progress(group, worksheet_id)
     question = serializers.current_question(worksheet_id, progress.current_question_index)
@@ -187,23 +193,22 @@ def get_state(group_id):
         # hand the pen to someone else rather than stranding the group.
         typist_service.reassign_if_stale(progress, group_id)
 
-    return jsonify(**serializers.build_group_state(group, progress, user, state))
+    return jsonify(**serializers.build_group_state(group, progress, key, state))
 
 
 @groups_bp.get("/<int:group_id>/history")
-@login_required
 def get_group_history(group_id):
     """Every published discussion this group has done in its class, for
-    both its own students and its TA — a member of the group, or the
-    section's TA (or an admin), but not anyone else.
+    both its own participants and its TA — a member of the group, or the
+    section's TA (or an admin), but not anyone else. Only covers data
+    still inside the retention window.
     """
     group = _load_group(group_id)
     if group is None:
         return jsonify(error="group not found"), 404
 
-    user = get_current_user()
-    if _membership(group_id, user.id) is None:
-        error = require_class_access(user, group.klass)
+    if _membership(group_id, current_participant_key()) is None:
+        error = require_class_access(get_current_user(), group.klass)
         if error:
             return error
 
@@ -211,32 +216,30 @@ def get_group_history(group_id):
 
 
 @groups_bp.get("/<int:group_id>/worksheets/<int:worksheet_id>/work")
-@login_required
 def get_group_work(group_id, worksheet_id):
-    """Read-only replay of this group's submitted code on one assignment —
-    the "View work" link on a student's My Assignments page. Same access
-    as group history: a member of the group, or the section's TA (or an
-    admin), but not anyone else.
+    """Read-only replay of this group's submitted code on one assignment.
+    Same access as group history: a member of the group, or the section's
+    TA (or an admin), but not anyone else.
     """
     group = _load_group(group_id)
     if group is None:
         return jsonify(error="group not found"), 404
 
-    user = get_current_user()
-    if _membership(group_id, user.id) is None:
-        error = require_class_access(user, group.klass)
+    key = current_participant_key()
+    if _membership(group_id, key) is None:
+        error = require_class_access(get_current_user(), group.klass)
         if error:
             return error
 
-    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    error = _worksheet_for_group_or_error(group, worksheet_id, get_current_user())
     if error:
         return error
 
-    return jsonify(**serializers.build_group_work(group, worksheet_id, user))
+    return jsonify(**serializers.build_group_work(group, worksheet_id, key or ""))
 
 
 @groups_bp.put("/<int:group_id>/name")
-@login_required
+@participant_required
 def rename_group(group_id):
     """Any current member can (re)name the group — it's shown at the top of
     the worksheet. Last write wins, mirroring the shared code editor."""
@@ -244,20 +247,21 @@ def rename_group(group_id):
     if group is None:
         return jsonify(error="group not found"), 404
 
-    user = get_current_user()
-    if _membership(group_id, user.id) is None:
+    key = current_participant_key()
+    if _membership(group_id, key) is None:
         return jsonify(error="not a member of this group"), 403
 
     name = ((request.get_json(silent=True) or {}).get("name") or "").strip()
     if not name:
         return jsonify(error="a name is required"), 400
     group.name = name[:80]
+    touch_group(group_id)
     db.session.commit()
     return jsonify(ok=True, name=group.name)
 
 
 @groups_bp.post("/<int:group_id>/worksheets/<int:worksheet_id>/questions/<int:question_id>/practice-run")
-@login_required
+@participant_required
 def practice_run(group_id, worksheet_id, question_id):
     """Re-run tests against an already-unlocked question — personal
     practice only, whether that question is on a fully completed
@@ -275,11 +279,11 @@ def practice_run(group_id, worksheet_id, question_id):
     if group is None:
         return jsonify(error="group not found"), 404
 
-    user = get_current_user()
-    if _membership(group_id, user.id) is None:
+    key = current_participant_key()
+    if _membership(group_id, key) is None:
         return jsonify(error="not a member of this group"), 403
 
-    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    error = _worksheet_for_group_or_error(group, worksheet_id, get_current_user())
     if error:
         return error
 
@@ -303,12 +307,13 @@ def practice_run(group_id, worksheet_id, question_id):
     if results is None:
         return jsonify(error="results is required"), 400
 
-    _record_test_run(group.id, question.id, user.id, "practice", code, results)
+    touch_group(group.id)
+    _record_test_run(group.id, question.id, key, "practice", code, results)
     return jsonify(status="done", **results)
 
 
 @groups_bp.put("/<int:group_id>/code")
-@login_required
+@participant_required
 def update_code(group_id):
     group = _load_group(group_id)
     if group is None:
@@ -319,13 +324,16 @@ def update_code(group_id):
     if worksheet_id is None:
         return jsonify(error="worksheet_id is required"), 400
 
-    user = get_current_user()
-    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    key = current_participant_key()
+    if _membership(group_id, key) is None:
+        return jsonify(error="not a member of this group"), 403
+
+    error = _worksheet_for_group_or_error(group, worksheet_id, get_current_user())
     if error:
         return error
 
     progress = _get_or_create_progress(group, worksheet_id)
-    if progress.typist_user_id != user.id:
+    if progress.typist_key != key:
         return jsonify(error="only the current typist can edit the code"), 403
 
     question = serializers.current_question(worksheet_id, progress.current_question_index)
@@ -335,12 +343,13 @@ def update_code(group_id):
     state = _get_or_create_state(group, question)
     state.code = data.get("code", "")
     state.updated_at = utcnow()
+    touch_group(group_id)
     db.session.commit()
     return jsonify(ok=True)
 
 
 @groups_bp.put("/<int:group_id>/scratch-code")
-@login_required
+@participant_required
 def update_scratch_code(group_id):
     """Personal, non-collaborative code — any member can edit their own
     regardless of who's typist. Persisted server-side (see ScratchCode's
@@ -357,11 +366,11 @@ def update_scratch_code(group_id):
     if worksheet_id is None:
         return jsonify(error="worksheet_id is required"), 400
 
-    user = get_current_user()
-    if _membership(group_id, user.id) is None:
+    key = current_participant_key()
+    if _membership(group_id, key) is None:
         return jsonify(error="not a member of this group"), 403
 
-    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    error = _worksheet_for_group_or_error(group, worksheet_id, get_current_user())
     if error:
         return error
 
@@ -370,18 +379,21 @@ def update_scratch_code(group_id):
     if question is None:
         return jsonify(error="worksheet already completed"), 409
 
-    scratch = ScratchCode.query.filter_by(group_id=group_id, question_id=question.id, user_id=user.id).first()
+    scratch = ScratchCode.query.filter_by(
+        group_id=group_id, question_id=question.id, participant_key=key
+    ).first()
     if scratch is None:
-        scratch = ScratchCode(group_id=group_id, question_id=question.id, user_id=user.id)
+        scratch = ScratchCode(group_id=group_id, question_id=question.id, participant_key=key)
         db.session.add(scratch)
     scratch.code = data.get("code", "")
     scratch.updated_at = utcnow()
+    touch_group(group_id)
     db.session.commit()
     return jsonify(ok=True)
 
 
 @groups_bp.post("/<int:group_id>/typist/give-up")
-@login_required
+@participant_required
 def give_up_typist_route(group_id):
     """The current typist voluntarily releases the pen; it's randomly
     reassigned to another active group member (see services/typist.py).
@@ -397,11 +409,11 @@ def give_up_typist_route(group_id):
     if worksheet_id is None:
         return jsonify(error="worksheet_id is required"), 400
 
-    user = get_current_user()
-    if _membership(group_id, user.id) is None:
+    key = current_participant_key()
+    if _membership(group_id, key) is None:
         return jsonify(error="not a member of this group"), 403
 
-    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    error = _worksheet_for_group_or_error(group, worksheet_id, get_current_user())
     if error:
         return error
 
@@ -409,14 +421,16 @@ def give_up_typist_route(group_id):
         return jsonify(error="you're the only person in this group — there's no one to give the pen to"), 409
 
     progress = _get_or_create_progress(group, worksheet_id)
-    if typist_service.give_up_typist(progress, group_id, user.id):
+    if typist_service.give_up_typist(progress, group_id, key):
+        touch_group(group_id)
+        db.session.commit()
         return jsonify(ok=True)
 
     return jsonify(error="you are not the current typist"), 409
 
 
 @groups_bp.post("/<int:group_id>/leave")
-@login_required
+@participant_required
 def leave_group_route(group_id):
     """Fired from StudentWorksheetPage on unmount when navigating away
     in-app — marks the caller inactive immediately (rather than waiting out
@@ -434,21 +448,21 @@ def leave_group_route(group_id):
     if worksheet_id is None:
         return jsonify(error="worksheet_id is required"), 400
 
-    user = get_current_user()
-    if _membership(group_id, user.id) is None:
+    key = current_participant_key()
+    if _membership(group_id, key) is None:
         return jsonify(error="not a member of this group"), 403
 
-    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    error = _worksheet_for_group_or_error(group, worksheet_id, get_current_user())
     if error:
         return error
 
     progress = _get_or_create_progress(group, worksheet_id)
-    typist_service.leave(progress, group_id, user.id)
+    typist_service.leave(progress, group_id, key)
     return jsonify(ok=True)
 
 
 @groups_bp.post("/<int:group_id>/ratings")
-@login_required
+@participant_required
 def submit_rating(group_id):
     group = _load_group(group_id)
     if group is None:
@@ -459,11 +473,11 @@ def submit_rating(group_id):
     if worksheet_id is None:
         return jsonify(error="worksheet_id is required"), 400
 
-    user = get_current_user()
-    if _membership(group_id, user.id) is None:
+    key = current_participant_key()
+    if _membership(group_id, key) is None:
         return jsonify(error="not a member of this group"), 403
 
-    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    error = _worksheet_for_group_or_error(group, worksheet_id, get_current_user())
     if error:
         return error
 
@@ -490,19 +504,22 @@ def submit_rating(group_id):
     if value not in (1, 2, 3, 4, 5):
         return jsonify(error="value must be an integer 1-5"), 400
 
-    rating = Rating.query.filter_by(group_id=group.id, question_id=question.id, user_id=user.id).first()
+    rating = Rating.query.filter_by(
+        group_id=group.id, question_id=question.id, participant_key=key
+    ).first()
     if rating is None:
-        db.session.add(Rating(group_id=group.id, question_id=question.id, user_id=user.id, value=value))
+        db.session.add(Rating(group_id=group.id, question_id=question.id, participant_key=key, value=value))
     else:
         rating.value = value
         rating.updated_at = utcnow()
+    touch_group(group_id)
     db.session.commit()
 
     return jsonify(ok=True)
 
 
 @groups_bp.post("/<int:group_id>/worksheets/<int:worksheet_id>/questions/<int:question_id>/response")
-@login_required
+@participant_required
 def submit_response(group_id, worksheet_id, question_id):
     """The group's shared answer to a non-code question (multiple choice,
     dropdown, fill-in-the-blank, short answer, plain text, counterexample).
@@ -516,11 +533,11 @@ def submit_response(group_id, worksheet_id, question_id):
     if group is None:
         return jsonify(error="group not found"), 404
 
-    user = get_current_user()
-    if _membership(group_id, user.id) is None:
+    key = current_participant_key()
+    if _membership(group_id, key) is None:
         return jsonify(error="not a member of this group"), 403
 
-    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    error = _worksheet_for_group_or_error(group, worksheet_id, get_current_user())
     if error:
         return error
 
@@ -547,17 +564,18 @@ def submit_response(group_id, worksheet_id, question_id):
     if row is None:
         row = QuestionResponse(group_id=group.id, question_id=question.id)
         db.session.add(row)
-    row.user_id = user.id
+    row.participant_key = key
     row.response_json = json.dumps(response)
     row.is_correct = is_correct
     row.created_at = utcnow()
+    touch_group(group_id)
     db.session.commit()
 
     return jsonify(ok=True, is_correct=is_correct)
 
 
 @groups_bp.post("/<int:group_id>/worksheets/<int:worksheet_id>/questions/<int:question_id>/prediction")
-@login_required
+@participant_required
 def submit_prediction(group_id, worksheet_id, question_id):
     """The group's shared answer to the optional prediction prompt on a
     question (Question.prediction_json). One row per (group, question).
@@ -570,11 +588,11 @@ def submit_prediction(group_id, worksheet_id, question_id):
     if group is None:
         return jsonify(error="group not found"), 404
 
-    user = get_current_user()
-    if _membership(group_id, user.id) is None:
+    key = current_participant_key()
+    if _membership(group_id, key) is None:
         return jsonify(error="not a member of this group"), 403
 
-    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    error = _worksheet_for_group_or_error(group, worksheet_id, get_current_user())
     if error:
         return error
 
@@ -603,17 +621,18 @@ def submit_prediction(group_id, worksheet_id, question_id):
     if row is None:
         row = GroupPrediction(group_id=group.id, question_id=question.id)
         db.session.add(row)
-    row.user_id = user.id
+    row.participant_key = key
     row.prediction_text = text
     row.is_correct = is_correct
     row.created_at = utcnow()
+    touch_group(group_id)
     db.session.commit()
 
     return jsonify(ok=True, is_correct=is_correct)
 
 
 @groups_bp.post("/<int:group_id>/advance")
-@login_required
+@participant_required
 def advance(group_id):
     group = _load_group(group_id)
     if group is None:
@@ -624,11 +643,11 @@ def advance(group_id):
     if worksheet_id is None:
         return jsonify(error="worksheet_id is required"), 400
 
-    user = get_current_user()
-    if _membership(group_id, user.id) is None:
+    key = current_participant_key()
+    if _membership(group_id, key) is None:
         return jsonify(error="not a member of this group"), 403
 
-    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    error = _worksheet_for_group_or_error(group, worksheet_id, get_current_user())
     if error:
         return error
 
@@ -641,11 +660,13 @@ def advance(group_id):
     if not success:
         return jsonify(error=error), 409
 
+    touch_group(group_id)
+    db.session.commit()
     return jsonify(ok=True)
 
 
 @groups_bp.post("/<int:group_id>/advance/force")
-@login_required
+@participant_required
 def force_advance(group_id):
     """Student-side escape hatch: any group member can skip the ratings
     requirement (unlike /advance above) — e.g. a member who crashed and
@@ -666,14 +687,14 @@ def force_advance(group_id):
     if worksheet_id is None:
         return jsonify(error="worksheet_id is required"), 400
 
-    user = get_current_user()
-    if _membership(group_id, user.id) is None:
+    key = current_participant_key()
+    if _membership(group_id, key) is None:
         return jsonify(error="not a member of this group"), 403
 
     if GroupMembership.query.filter_by(group_id=group_id).count() <= 1:
         return jsonify(error="you're the only person in this group — just rate and pass the tests normally"), 409
 
-    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    error = _worksheet_for_group_or_error(group, worksheet_id, get_current_user())
     if error:
         return error
 
@@ -686,6 +707,8 @@ def force_advance(group_id):
     if not success:
         return jsonify(error=error), 409
 
+    touch_group(group_id)
+    db.session.commit()
     return jsonify(ok=True)
 
 
@@ -716,7 +739,7 @@ def get_solution(group_id):
 
 
 @groups_bp.post("/<int:group_id>/run-tests")
-@login_required
+@participant_required
 def run_tests(group_id):
     group = _load_group(group_id)
     if group is None:
@@ -727,11 +750,11 @@ def run_tests(group_id):
     if worksheet_id is None:
         return jsonify(error="worksheet_id is required"), 400
 
-    user = get_current_user()
-    if _membership(group_id, user.id) is None:
+    key = current_participant_key()
+    if _membership(group_id, key) is None:
         return jsonify(error="not a member of this group"), 403
 
-    error = _worksheet_for_group_or_error(group, worksheet_id, user)
+    error = _worksheet_for_group_or_error(group, worksheet_id, get_current_user())
     if error:
         return error
 
@@ -740,7 +763,7 @@ def run_tests(group_id):
         return jsonify(error="source must be 'shared' or 'scratch'"), 400
 
     progress = _get_or_create_progress(group, worksheet_id)
-    if source == "shared" and progress.typist_user_id != user.id:
+    if source == "shared" and progress.typist_key != key:
         return jsonify(error="only the current typist can run tests against the shared code"), 403
 
     question = serializers.current_question(worksheet_id, progress.current_question_index)
@@ -755,7 +778,8 @@ def run_tests(group_id):
     if results is None:
         return jsonify(error="results is required"), 400
 
-    _record_test_run(group.id, question.id, user.id, source, code, results)
+    touch_group(group.id)
+    _record_test_run(group.id, question.id, key, source, code, results)
     return jsonify(status="done", **results)
 
 

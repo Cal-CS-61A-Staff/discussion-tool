@@ -13,7 +13,7 @@ from server.models.user import User
 from server.models.worksheet import Question, Worksheet
 from server.services import advance as advance_service
 from server.services import response_grading
-from server.tests.conftest import add_member, login_as, make_class
+from server.tests.conftest import act_as_participant, add_member, login_as, make_class
 
 
 def _setup():
@@ -34,7 +34,7 @@ def _setup():
     db.session.add(student)
     db.session.flush()
 
-    db.session.add(GroupMembership(group_id=group.id, user_id=student.id))
+    db.session.add(GroupMembership(group_id=group.id, participant_key=f"u{student.id}", participant_name=student.display_name))
     db.session.add(GroupAssignmentProgress(group_id=group.id, worksheet_id=worksheet.id, current_question_index=0))
     db.session.commit()
     return {"ta": ta, "worksheet": worksheet, "group": group, "student": student}
@@ -133,7 +133,7 @@ def test_student_state_strips_answers(app, client):
     wid = s["worksheet"].id
     _create(client, wid, MC_PAYLOAD)
 
-    login_as(client, s["student"])
+    act_as_participant(client, s["student"])
     resp = client.get(f"/api/groups/{s['group'].id}/state?worksheet_id={wid}")
     assert resp.status_code == 200
     question = resp.get_json()["question"]
@@ -149,14 +149,14 @@ def test_shared_response_grading_and_advance_gate(app, client):
     qid = _create(client, wid, MC_PAYLOAD).get_json()["question"]["id"]
     gid = s["group"].id
 
-    login_as(client, s["student"])
+    act_as_participant(client, s["student"])
     url = f"/api/groups/{gid}/worksheets/{wid}/questions/{qid}/response"
 
     wrong = client.post(url, json={"response": [0]})
     assert wrong.status_code == 200 and wrong.get_json()["is_correct"] is False
 
     # Everyone has rated, but the group answer is still wrong -> not ready.
-    db.session.add(Rating(group_id=gid, question_id=qid, user_id=s["student"].id, value=3))
+    db.session.add(Rating(group_id=gid, question_id=qid, participant_key=f'u{s["student"].id}', value=3))
     db.session.commit()
     assert advance_service.ready_to_advance(gid, qid) is False
 
@@ -178,7 +178,7 @@ def test_display_type_advances_on_ratings_alone(app, client):
     gid = s["group"].id
 
     assert advance_service.ready_to_advance(gid, qid) is False  # nobody rated yet
-    db.session.add(Rating(group_id=gid, question_id=qid, user_id=s["student"].id, value=5))
+    db.session.add(Rating(group_id=gid, question_id=qid, participant_key=f'u{s["student"].id}', value=5))
     db.session.commit()
     assert advance_service.ready_to_advance(gid, qid) is True
 
@@ -191,7 +191,7 @@ def test_coding_question_ignores_response_endpoint(app, client):
     db.session.add(q)
     db.session.commit()
 
-    login_as(client, s["student"])
+    act_as_participant(client, s["student"])
     resp = client.post(
         f"/api/groups/{s['group'].id}/worksheets/{wid}/questions/{q.id}/response", json={"response": "x"}
     )
@@ -205,7 +205,7 @@ def test_worksheet_grades_count_a_correct_multiple_choice(app, client):
     qid = _create(client, wid, MC_PAYLOAD).get_json()["question"]["id"]
     gid = s["group"].id
 
-    login_as(client, s["student"])
+    act_as_participant(client, s["student"])
     client.post(f"/api/groups/{gid}/worksheets/{wid}/questions/{qid}/response", json={"response": [1]})
 
     login_as(client, s["ta"])
@@ -273,7 +273,7 @@ def test_output_prediction_state_hides_the_answer(app, client):
     s = _setup()
     q = _make_question(s["worksheet"].id, OUTPUT_PRED)
 
-    login_as(client, s["student"])
+    act_as_participant(client, s["student"])
     resp = client.get(f"/api/groups/{s['group'].id}/state?worksheet_id={s['worksheet'].id}")
     assert resp.status_code == 200
     pred = resp.get_json()["question"]["prediction"]
@@ -288,10 +288,10 @@ def test_output_prediction_gates_advancing(app, client):
     gid, wid = s["group"].id, s["worksheet"].id
     from server.services import serializers
 
-    login_as(client, s["student"])
+    act_as_participant(client, s["student"])
     client.get(f"/api/groups/{gid}/state?worksheet_id={wid}")
     item = serializers.group_prediction_item(q, gid)
-    db.session.add(Rating(group_id=gid, question_id=q.id, user_id=s["student"].id, value=4))
+    db.session.add(Rating(group_id=gid, question_id=q.id, participant_key=f'u{s["student"].id}', value=4))
     db.session.commit()
 
     url = f"/api/groups/{gid}/worksheets/{wid}/questions/{q.id}/prediction"
@@ -307,8 +307,8 @@ def test_written_prediction_gates_until_submitted(app, client):
     q = _make_question(s["worksheet"].id, {"mode": "written", "prompt": "describe your process"})
     gid, wid = s["group"].id, s["worksheet"].id
 
-    login_as(client, s["student"])
-    db.session.add(Rating(group_id=gid, question_id=q.id, user_id=s["student"].id, value=4))
+    act_as_participant(client, s["student"])
+    db.session.add(Rating(group_id=gid, question_id=q.id, participant_key=f'u{s["student"].id}', value=4))
     db.session.commit()
     assert advance_service.ready_to_advance(gid, q.id) is False
 
@@ -321,7 +321,7 @@ def test_no_prediction_means_no_gate(app, client):
     s = _setup()
     q = _make_question(s["worksheet"].id, prediction=None)
     gid = s["group"].id
-    db.session.add(Rating(group_id=gid, question_id=q.id, user_id=s["student"].id, value=4))
+    db.session.add(Rating(group_id=gid, question_id=q.id, participant_key=f'u{s["student"].id}', value=4))
     db.session.commit()
     assert advance_service.ready_to_advance(gid, q.id) is True
 
@@ -343,6 +343,6 @@ def test_python_tutor_code_round_trips(app, client):
     assert resp.status_code == 201
     assert resp.get_json()["question"]["python_tutor_code"] == "x = 1\ny = x + 1"
 
-    login_as(client, s["student"])
+    act_as_participant(client, s["student"])
     state = client.get(f"/api/groups/{s['group'].id}/state?worksheet_id={wid}").get_json()
     assert state["question"]["python_tutor_code"] == "x = 1\ny = x + 1"
