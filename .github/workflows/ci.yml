@@ -18,13 +18,6 @@ jobs:
       - name: Install backend dependencies
         run: pip install -r server/requirements.txt pytest
 
-      # test_grading.py runs real code through this image rather than
-      # mocking the sandbox — without it present, it'd fail instead of the
-      # intended local-dev skip (it only skips when the `docker` CLI itself
-      # is missing, which it isn't on these runners).
-      - name: Build grader image
-        run: docker build -t discussion-grader:latest ./grader
-
       - name: Run backend tests
         run: python -m pytest server/tests -q
 
@@ -46,3 +39,10 @@ jobs:
       - name: Build frontend
         working-directory: client
         run: npm run build
+
+      # The in-browser grading harness (client/src/pyodide/harness.py) —
+      # loads it under Pyodide in node and checks doctest/pltest/run_call
+      # against fixtures. Replaces the old server-side test_grading.py.
+      - name: Verify grading harness
+        working-directory: client
+        run: npm run verify-harness
