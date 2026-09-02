@@ -11,8 +11,6 @@ export const giveUpTypist = (groupId, worksheetId) =>
 export const leaveGroup = (groupId, worksheetId) =>
   api.post(`/groups/${groupId}/leave`, { worksheet_id: worksheetId });
 export const updateGroupName = (groupId, name) => api.put(`/groups/${groupId}/name`, { name });
-export const submitAttempt = (groupId, worksheetId, prediction) =>
-  api.post(`/groups/${groupId}/attempts`, { worksheet_id: worksheetId, prediction });
 export const submitRating = (groupId, worksheetId, value, questionId) =>
   api.post(`/groups/${groupId}/ratings`, {
     worksheet_id: worksheetId,
@@ -27,14 +25,15 @@ export const getGroupDetail = (groupId, worksheetId, signal) =>
   api.get(`/groups/${groupId}/detail?worksheet_id=${worksheetId}`, { signal });
 export const releaseTypist = (groupId, worksheetId) =>
   api.post(`/groups/${groupId}/typist/release`, { worksheet_id: worksheetId });
-export const runTests = (groupId, worksheetId, code, prediction, source) =>
-  api.post(`/groups/${groupId}/run-tests`, { worksheet_id: worksheetId, code, prediction, source });
-export const getTestRunResult = (groupId, testRunId) => api.get(`/groups/${groupId}/run-tests/${testRunId}`);
+// Grading runs in the browser (client/src/pyodide/); these just persist the
+// result the client computed.
+export const runTests = (groupId, worksheetId, code, results, source) =>
+  api.post(`/groups/${groupId}/run-tests`, { worksheet_id: worksheetId, code, results, source });
 export const getGroupHistory = (groupId) => api.get(`/groups/${groupId}/history`);
 export const getGroupWork = (groupId, worksheetId) => api.get(`/groups/${groupId}/worksheets/${worksheetId}/work`);
-export const practiceRun = (groupId, worksheetId, questionId, code, prediction) =>
-  api.post(`/groups/${groupId}/worksheets/${worksheetId}/questions/${questionId}/practice-run`, { code, prediction });
-export const submitResponse = (groupId, worksheetId, questionId, response) =>
-  api.post(`/groups/${groupId}/worksheets/${worksheetId}/questions/${questionId}/response`, { response });
+export const practiceRun = (groupId, worksheetId, questionId, code, results) =>
+  api.post(`/groups/${groupId}/worksheets/${worksheetId}/questions/${questionId}/practice-run`, { code, results });
+export const submitResponse = (groupId, worksheetId, questionId, response, extra) =>
+  api.post(`/groups/${groupId}/worksheets/${worksheetId}/questions/${questionId}/response`, { response, ...extra });
 export const submitPrediction = (groupId, worksheetId, questionId, text) =>
   api.post(`/groups/${groupId}/worksheets/${worksheetId}/questions/${questionId}/prediction`, { text });

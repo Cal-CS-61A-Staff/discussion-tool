@@ -60,12 +60,10 @@ def validate_prediction(pred):
     """The optional prediction prompt, on any problem_type. Returns
     (clean_dict, None) or (None, error). NULL/empty -> (None, None).
 
-    'output' mode is just a list of call expressions (one per line), e.g.
-    `fizzbuzz(5)`. Each is run against the question's own code (its
-    reference solution + setup, plus any extra `setup` here) by
-    server/blueprints/admin.py at save time, and the captured output is
-    stored as the verified `expected` in `items`. `items` is filled in
-    there, not here.
+    'output' mode is a list of call expressions (one per line), e.g.
+    `fizzbuzz(5)`. The TA editor runs each against the question's code in
+    the browser (Pyodide) and sends the captured outputs back as `items`
+    (list of {code, expected}); here we just shape-check them.
     """
     if not pred or not isinstance(pred, dict):
         return None, None
@@ -84,7 +82,13 @@ def validate_prediction(pred):
     calls = [c for c in calls if c]
     if not calls:
         return None, "add at least one call to predict, e.g. fizzbuzz(5)"
-    return {"mode": "output", "setup": pred.get("setup") or "", "calls": calls, "items": []}, None
+    items = []
+    for it in pred.get("items") or []:
+        if isinstance(it, dict) and it.get("code"):
+            items.append({"code": str(it["code"]), "expected": str(it.get("expected", ""))})
+    if len(items) != len(calls):
+        return None, "prediction items weren't resolved — try saving again once Python has loaded"
+    return {"mode": "output", "setup": pred.get("setup") or "", "calls": calls, "items": items}, None
 
 
 def parse_content(question):
@@ -224,10 +228,17 @@ def public_content(question):
         return {"url": content.get("url", ""), "height": content.get("height") or 400}
 
     if ptype == "counterexample":
+        # reference_code + setup are needed client-side now that grading
+        # runs in the browser (Pyodide). This does reveal a correct
+        # implementation to a student who digs into the network payload,
+        # which is an accepted trade for a participation-graded exercise
+        # whose task is "find a breaking input", not "write the solution".
         return {
             "params": content.get("params") or [],
             "call": content.get("call", ""),
             "buggy_code": content.get("buggy_code", ""),
+            "reference_code": content.get("reference_code", ""),
+            "setup": content.get("setup", ""),
             "constraints": content.get("constraints", ""),
         }
 

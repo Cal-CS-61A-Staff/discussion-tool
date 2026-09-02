@@ -26,11 +26,3 @@ class User(db.Model):
     # instead of trusting whatever the client sends.
     email = db.Column(db.String(120), nullable=True, index=True)
     created_at = db.Column(db.DateTime, default=utcnow)
-    # Per-user rate limit for the autograder (server/services/grading.py) —
-    # separate from the group-wide predict/run cooldown, since spinning up a
-    # container is a heavier operation and scratch-editor runs are personal.
-    last_grader_run_at = db.Column(db.DateTime, nullable=True)
-    # Consecutive-tries counter behind the escalating cooldown
-    # (server/services/grader_cooldown.py) — resets to 0 once the user's
-    # been idle long enough that this no longer counts as the same streak.
-    grader_run_streak = db.Column(db.Integer, default=0, nullable=False)

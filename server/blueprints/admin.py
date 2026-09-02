@@ -25,7 +25,6 @@ from server.models.test_run import TestRun
 from server.models.user import User
 from server.models.worksheet import Question, Worksheet
 from server.services import advance as advance_service
-from server.services import grading as grading_service
 from server.services import response_grading
 from server.services.number_spec import format_number_spec, parse_number_spec
 from server.services.roster_import import add_admin_by_email, find_user_by_email, import_ta_roster
@@ -482,83 +481,13 @@ PROBLEM_TYPES = (
 )
 
 
-def _validate_reference_solution(grading_mode, setup_code, test_code, reference_solution):
-    """Runs `reference_solution` through the real sandboxed grader against
-    `test_code` (already resolved — auto-generated for 'simple', hand-written
-    for 'pltest', unused for 'doctest'). Returns (None) on success, or
-    (response, status) with the specific failure on rejection — shared by
-    create_question and update_question so both save paths get the same
-    authoring-typo safety net. Not called at all for 'discussion' questions,
-    which have no code to validate.
-    """
-
-    class _ValidationTarget:
-        pass
-
-    validation_target = _ValidationTarget()
-    validation_target.setup_code = setup_code
-    validation_target.test_code = test_code
-    validation_target.grading_mode = grading_mode
-
-    results = grading_service.run_grader(validation_target, reference_solution)
-    if results.get("error"):
-        return jsonify(error=f"Reference solution failed to run: {results['error']}"), 400
-    if grading_mode == "doctest" and results.get("total_count") == 0:
-        return (
-            jsonify(error="No doctest examples (>>> ...) were found in the starter code's docstrings."),
-            400,
-        )
-    if results.get("passed_count") != results.get("total_count"):
-        failures = [t for t in results.get("test_results", []) if not t["passed"]]
-        return (
-            jsonify(
-                error="Your reference solution doesn't pass its own test cases.",
-                failing_cases=failures,
-            ),
-            400,
-        )
-    return None
-
-
-def _resolve_prediction_items(fields):
-    """For an output-mode prediction: run each authored call (e.g.
-    `fizzbuzz(5)`) against the question's own code — its reference solution
-    + setup code, plus any extra setup on the prediction itself — in the
-    real sandbox, and capture the output as the verified `expected`.
-    Mutates fields["prediction_json"] with the resolved `items`. Returns
-    None on success or (response, status) if a call errors.
-    """
-    try:
-        pred = json.loads(fields["prediction_json"]) if fields["prediction_json"] else {}
-    except ValueError:
-        pred = {}
-    if pred.get("mode") != "output":
-        return None
-
-    context = "\n\n".join(
-        part
-        for part in (fields.get("setup_code") or "", fields.get("reference_solution") or "", pred.get("setup") or "")
-        if part and part.strip()
-    )
-
-    class _Target:
-        setup_code = ""
-        test_code = ""
-        grading_mode = "doctest"
-
-    items = []
-    for call in pred.get("calls") or []:
-        result = grading_service.run_grader(_Target(), context, predict_call=call)
-        if result.get("error"):
-            return jsonify(error=f"Couldn't run “{call}”: {result['error']}"), 400
-        pr = result.get("predict_result") or {}
-        if pr.get("kind") == "error":
-            return jsonify(error=f"“{call}” raised an error when run against the question's code."), 400
-        items.append({"code": call, "expected": pr.get("repr", "") if pr.get("kind") == "value" else ""})
-
-    pred["items"] = items
-    fields["prediction_json"] = json.dumps(pred)
-    return None
+# Reference-solution validation and prediction-item resolution both used to
+# run the sandboxed Docker grader here at save time. Grading is in-browser
+# now (Pyodide — client/src/pyodide/), so the TA editor does both before it
+# POSTs: it runs the reference solution against the tests and blocks the
+# save on failure, and it resolves each output-prediction call's expected
+# output and sends `items` in the payload (shape-checked in
+# server/services/response_grading.py:validate_prediction).
 
 
 def _question_fields_from_request(data):
@@ -678,11 +607,12 @@ def _resolve_test_code(fields):
 def create_question(worksheet_id):
     """The guided question-authoring form: title, problem description, and
     (for the three autograded modes) embedded problem code plus a reference
-    "passing solution". The reference solution is run through the real
-    sandboxed grader before saving — if it doesn't pass, the save is
-    rejected with the specific failure, catching authoring typos before
-    students ever see them. 'discussion' questions skip all of that: no
-    code, no autograder, just a prompt (and an optional solution write-up).
+    "passing solution". The TA editor runs the reference solution against
+    the tests in the browser (Pyodide) before it POSTs and blocks the save
+    on failure, catching authoring typos before students see them; here we
+    just shape-check the fields and the client-resolved prediction `items`.
+    'discussion' questions have no code and no autograder — just a prompt
+    (and an optional solution write-up).
     """
     worksheet = Worksheet.query.get_or_404(worksheet_id)
     error = require_class_access(get_current_user(), worksheet.klass)
@@ -695,16 +625,6 @@ def create_question(worksheet_id):
         return error
 
     test_code = _resolve_test_code(fields)
-    if fields["grading_mode"] != "discussion":
-        error = _validate_reference_solution(
-            fields["grading_mode"], fields["setup_code"], test_code, fields["reference_solution"]
-        )
-        if error:
-            return error
-    if fields["prediction_json"]:
-        error = _resolve_prediction_items(fields)
-        if error:
-            return error
 
     next_order_index = (
         db.session.query(func.max(Question.order_index)).filter_by(worksheet_id=worksheet.id).scalar()
@@ -737,9 +657,10 @@ def create_question(worksheet_id):
 @admin_bp.put("/questions/<int:question_id>")
 @role_required("ta")
 def update_question(question_id):
-    """Re-validates the (possibly edited) reference solution before saving,
-    same safety net as creation. order_index and worksheet_id are untouched
-    here — reordering is a separate endpoint
+    """Same as creation: the client has already run the (possibly edited)
+    reference solution against the tests in the browser and blocked the
+    save on failure. order_index and worksheet_id are untouched here —
+    reordering is a separate endpoint
     (PUT /worksheets/:id/questions/reorder).
     """
     question = Question.query.get_or_404(question_id)
@@ -754,16 +675,6 @@ def update_question(question_id):
         return error
 
     test_code = _resolve_test_code(fields)
-    if fields["grading_mode"] != "discussion":
-        error = _validate_reference_solution(
-            fields["grading_mode"], fields["setup_code"], test_code, fields["reference_solution"]
-        )
-        if error:
-            return error
-    if fields["prediction_json"]:
-        error = _resolve_prediction_items(fields)
-        if error:
-            return error
 
     question.title = fields["title"]
     question.prompt = fields["prompt"]

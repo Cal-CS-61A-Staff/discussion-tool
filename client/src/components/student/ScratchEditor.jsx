@@ -3,7 +3,7 @@ import CodeEditor from './CodeEditor.jsx';
 import TestRunner from './TestRunner.jsx';
 import { updateScratchCode } from '../../api/groups.js';
 
-export default function ScratchEditor({ groupId, worksheetId, initialCode, starterCode, graderCooldown, isIndividual }) {
+export default function ScratchEditor({ groupId, worksheetId, initialCode, starterCode, question, isIndividual }) {
   const [code, setCode] = useState(initialCode || starterCode || '');
   const [saveStatus, setSaveStatus] = useState('idle');
   const debounceRef = useRef(null);
@@ -51,7 +51,7 @@ export default function ScratchEditor({ groupId, worksheetId, initialCode, start
           source="scratch"
           code={code}
           label="Run tests on my scratch code"
-          graderCooldown={graderCooldown}
+          question={question}
         />
       </div>
     </div>

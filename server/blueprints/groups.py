@@ -11,7 +11,6 @@ from server.auth import (
     role_required,
 )
 from server.extensions import db
-from server.models.attempt import Attempt
 from server.models.group import Group, GroupAssignmentProgress, GroupMembership, GroupQuestionState, ScratchCode
 from server.models.group_prediction import GroupPrediction
 from server.models.question_response import QuestionResponse
@@ -19,11 +18,6 @@ from server.models.rating import Rating
 from server.models.test_run import TestRun
 from server.models.worksheet import Question, Worksheet
 from server.services import advance as advance_service
-from server.services import compare as compare_service
-from server.services import cooldown as cooldown_service
-from server.services import counterexample_grading
-from server.services import grader_cooldown as grader_cooldown_service
-from server.services import grading_queue as grading_queue_service
 from server.services import response_grading
 from server.services import serializers
 from server.services import typist as typist_service
@@ -115,6 +109,48 @@ def _get_or_create_state(group, question):
         db.session.add(state)
         db.session.commit()
     return state
+
+
+def _clean_run_results(raw):
+    """Normalises the grader result the browser computed (Pyodide harness —
+    client/src/pyodide/) into the stored/returned shape. Trusted as-is: a
+    discussion tool doesn't gate real grades on this. Returns None if it's
+    unusable."""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        passed = int(raw.get("passed_count") or 0)
+        total = int(raw.get("total_count") or 0)
+    except (TypeError, ValueError):
+        return None
+    test_results = raw.get("test_results")
+    if not isinstance(test_results, list):
+        test_results = []
+    return {
+        "passed_count": max(0, passed),
+        "total_count": max(0, total),
+        "test_results": test_results[:200],
+        "student_output": str(raw.get("student_output") or "")[:20000],
+        "error": (str(raw["error"])[:2000] if raw.get("error") else None),
+    }
+
+
+def _record_test_run(group_id, question_id, user_id, source, code, results):
+    run = TestRun(
+        group_id=group_id,
+        question_id=question_id,
+        user_id=user_id,
+        source=source,
+        prediction_text="",
+        code_snapshot=code,
+        status="done",
+        passed_count=results["passed_count"],
+        total_count=results["total_count"],
+        results_json=json.dumps(results),
+    )
+    db.session.add(run)
+    db.session.commit()
+    return run
 
 
 @groups_bp.get("/<int:group_id>/state")
@@ -263,40 +299,12 @@ def practice_run(group_id, worksheet_id, question_id):
     if not code or not code.strip():
         return jsonify(error="code is required"), 400
 
-    if not grader_cooldown_service.try_acquire(user):
-        return (
-            jsonify(
-                error="cooldown active",
-                remaining_seconds=grader_cooldown_service.remaining_seconds(user),
-                cooldown_seconds=grader_cooldown_service.cooldown_seconds_for(user),
-            ),
-            429,
-        )
+    results = _clean_run_results(data.get("results"))
+    if results is None:
+        return jsonify(error="results is required"), 400
 
-    prediction = (data.get("prediction") or "").strip()
-    predict_call = None
-    if prediction:
-        state = _get_or_create_state(group, question)
-        if state.predict_example_json:
-            predict_call = json.loads(state.predict_example_json).get("call")
-
-    test_run = TestRun(
-        group_id=group.id,
-        question_id=question.id,
-        user_id=user.id,
-        source="practice",
-        prediction_text=prediction,
-        code_snapshot=code,
-        status="pending",
-    )
-    db.session.add(test_run)
-    db.session.commit()
-
-    grading_queue_service.enqueue_grading_job(
-        test_run.id, predict_call, prediction or None, grader_cooldown_service.cooldown_seconds_for(user)
-    )
-
-    return jsonify(test_run_id=test_run.id, status="pending"), 202
+    _record_test_run(group.id, question.id, user.id, "practice", code, results)
+    return jsonify(status="done", **results)
 
 
 @groups_bp.put("/<int:group_id>/code")
@@ -439,59 +447,6 @@ def leave_group_route(group_id):
     return jsonify(ok=True)
 
 
-@groups_bp.post("/<int:group_id>/attempts")
-@login_required
-def submit_attempt(group_id):
-    group = _load_group(group_id)
-    if group is None:
-        return jsonify(error="group not found"), 404
-
-    data = request.get_json(silent=True) or {}
-    worksheet_id = _worksheet_id_from_body(data)
-    if worksheet_id is None:
-        return jsonify(error="worksheet_id is required"), 400
-
-    user = get_current_user()
-    error = _worksheet_for_group_or_error(group, worksheet_id, user)
-    if error:
-        return error
-
-    progress = _get_or_create_progress(group, worksheet_id)
-    if progress.typist_user_id != user.id:
-        return jsonify(error="only the current typist can run an attempt"), 403
-
-    question = serializers.current_question(worksheet_id, progress.current_question_index)
-    if question is None:
-        return jsonify(error="worksheet already completed"), 409
-
-    prediction = (data.get("prediction") or "").strip()
-    if not prediction:
-        return jsonify(error="a prediction is required before running"), 400
-
-    if not cooldown_service.try_acquire(progress):
-        return (
-            jsonify(error="cooldown active", remaining_seconds=cooldown_service.remaining_seconds(progress)),
-            429,
-        )
-
-    state = _get_or_create_state(group, question)
-    is_match = compare_service.normalize_and_compare(prediction, question.expected_output)
-
-    db.session.add(
-        Attempt(
-            group_id=group.id,
-            question_id=question.id,
-            user_id=user.id,
-            prediction_text=prediction,
-            is_match=is_match,
-            code_snapshot=state.code,
-        )
-    )
-    db.session.commit()
-
-    return jsonify(is_match=is_match, expected_output=question.expected_output)
-
-
 @groups_bp.post("/<int:group_id>/ratings")
 @login_required
 def submit_rating(group_id):
@@ -554,7 +509,8 @@ def submit_response(group_id, worksheet_id, question_id):
     One row per (group, question) — any member submits or edits it, last
     write wins, mirroring the shared code editor. For auto-checkable types a
     correct answer here is what gates advancing (server/services/advance.py).
-    A 'counterexample' answer is graded synchronously in the sandbox.
+    'counterexample' is graded in the browser (Pyodide) and the caller sends
+    `is_correct` — trusted as-is, same as "Run tests" results.
     """
     group = _load_group(group_id)
     if group is None:
@@ -583,9 +539,7 @@ def submit_response(group_id, worksheet_id, question_id):
     response = data.get("response")
 
     if (question.problem_type or "coding") == "counterexample":
-        is_correct, ce_error = counterexample_grading.grade(question, response)
-        if ce_error:
-            return jsonify(error=ce_error), 400
+        is_correct = bool(data.get("is_correct"))
     else:
         is_correct = response_grading.check_response(question, response)
 
@@ -797,65 +751,11 @@ def run_tests(group_id):
     if not code or not code.strip():
         return jsonify(error="code is required"), 400
 
-    # The inline "predict before you run" quiz is retired — the optional
-    # prediction prompt has its own submit endpoint now.
-    prediction = (data.get("prediction") or "").strip()
+    results = _clean_run_results(data.get("results"))
+    if results is None:
+        return jsonify(error="results is required"), 400
 
-    if not grader_cooldown_service.try_acquire(user):
-        return (
-            jsonify(
-                error="cooldown active",
-                remaining_seconds=grader_cooldown_service.remaining_seconds(user),
-                cooldown_seconds=grader_cooldown_service.cooldown_seconds_for(user),
-            ),
-            429,
-        )
-
-    state = _get_or_create_state(group, question)
-    predict_call = None
-    if state.predict_example_json:
-        predict_call = json.loads(state.predict_example_json).get("call")
-
-    test_run = TestRun(
-        group_id=group.id,
-        question_id=question.id,
-        user_id=user.id,
-        source=source,
-        prediction_text=prediction,
-        code_snapshot=code,
-        status="pending",
-    )
-    db.session.add(test_run)
-    db.session.commit()
-
-    # The actual Docker invocation happens out-of-process (`flask
-    # grading-worker`, server/services/grading_jobs.py) so a slow/blocked
-    # container doesn't tie up this web worker — see README "Grading
-    # concurrency". The frontend polls GET .../run-tests/:id below for the
-    # result, which lands in the exact same shape this endpoint used to
-    # return synchronously.
-    grading_queue_service.enqueue_grading_job(
-        test_run.id, predict_call, prediction, grader_cooldown_service.cooldown_seconds_for(user)
-    )
-
-    return jsonify(test_run_id=test_run.id, status="pending"), 202
-
-
-@groups_bp.get("/<int:group_id>/run-tests/<int:test_run_id>")
-@login_required
-def get_run_tests_result(group_id, test_run_id):
-    user = get_current_user()
-    if _membership(group_id, user.id) is None:
-        return jsonify(error="not a member of this group"), 403
-
-    test_run = TestRun.query.filter_by(id=test_run_id, group_id=group_id).first()
-    if test_run is None:
-        return jsonify(error="test run not found"), 404
-
-    if test_run.status != "done":
-        return jsonify(status="pending")
-
-    results = json.loads(test_run.results_json)
+    _record_test_run(group.id, question.id, user.id, source, code, results)
     return jsonify(status="done", **results)
 
 

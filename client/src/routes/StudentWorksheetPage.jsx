@@ -14,6 +14,7 @@ import ScratchEditor from '../components/student/ScratchEditor.jsx';
 import TestRunner from '../components/student/TestRunner.jsx';
 import TypistBanner from '../components/student/TypistBanner.jsx';
 import * as groupsApi from '../api/groups.js';
+import { gradeCounterexample } from '../pyodide/counterexample.js';
 import { usePolling } from '../hooks/usePolling.js';
 
 export default function StudentWorksheetPage() {
@@ -231,7 +232,16 @@ export default function StudentWorksheetPage() {
     clearError();
     setResponseSubmitting(true);
     try {
-      await groupsApi.submitResponse(groupId, worksheetId, data.question.id, response);
+      let extra;
+      if (data.question.problem_type === 'counterexample') {
+        const verdict = await gradeCounterexample({ content: data.question.content, values: response });
+        if (verdict.error) {
+          setActionError(verdict.error);
+          return;
+        }
+        extra = { is_correct: verdict.isCorrect };
+      }
+      await groupsApi.submitResponse(groupId, worksheetId, data.question.id, response, extra);
       await refetch();
     } catch (err) {
       setActionError(err.message);
@@ -467,9 +477,9 @@ export default function StudentWorksheetPage() {
                     worksheetId={worksheetId}
                     source="shared"
                     code={localCode}
+                    question={data.question}
                     disabled={!isMeTypist}
                     label="Run tests"
-                    graderCooldown={data.grader_cooldown}
                     lastSharedRun={data.last_shared_run}
                   />
                 </>
@@ -495,7 +505,7 @@ export default function StudentWorksheetPage() {
               worksheetId={worksheetId}
               initialCode={data.my_scratch_code}
               starterCode={data.question.starter_code}
-              graderCooldown={data.grader_cooldown}
+              question={data.question}
               isIndividual={data.group.is_individual}
             />
           )}

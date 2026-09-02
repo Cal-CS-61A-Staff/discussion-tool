@@ -7,6 +7,7 @@ import ProblemWidget from './ProblemWidget.jsx';
 import PythonTutorPanel from './PythonTutorPanel.jsx';
 import TestResultsPanel from './TestResultsPanel.jsx';
 import * as groupsApi from '../../api/groups.js';
+import { gradeCounterexample } from '../../pyodide/counterexample.js';
 import { usePracticeRunner } from '../../hooks/usePracticeRunner.js';
 
 /** One code buffer's practice view — editable for the viewer's own
@@ -15,19 +16,16 @@ import { usePracticeRunner } from '../../hooks/usePracticeRunner.js';
  * (server/blueprints/groups.py: POST .../practice-run). Shared between the
  * group's submitted-code block and the personal scratch-code block below.
  */
-function PracticeCodeBlock({ groupId, worksheetId, questionId, initialCode, editorLabel, runLabel, gradingMode }) {
+function PracticeCodeBlock({ groupId, worksheetId, questionId, question, initialCode, editorLabel, runLabel, gradingMode }) {
   const [code, setCode] = useState(initialCode || '');
-  const { results, running, error, run, remainingSeconds, cooldownSeconds } = usePracticeRunner(
+  const { results, running, error, run, pyLoading, cooling } = usePracticeRunner(
     groupId,
     worksheetId,
-    questionId
+    questionId,
+    question
   );
 
-  const onCooldown = remainingSeconds > 0;
-  const canRun = !running && !onCooldown && Boolean(code && code.trim());
-  const ringCircumference = 2 * Math.PI * 6.5;
-  const ringOffset =
-    cooldownSeconds > 0 ? ringCircumference * (1 - remainingSeconds / cooldownSeconds) : ringCircumference;
+  const canRun = !running && !cooling && !pyLoading && Boolean(code && code.trim());
 
   return (
     <>
@@ -35,12 +33,7 @@ function PracticeCodeBlock({ groupId, worksheetId, questionId, initialCode, edit
       {gradingMode !== 'discussion' && (
         <div className="predict-row" style={{ marginTop: 14 }}>
           <button type="button" className="btn btn-primary run-btn" onClick={() => run(code, '')} disabled={!canRun}>
-            {onCooldown && (
-              <svg className="cooldown-ring" viewBox="0 0 16 16">
-                <circle cx="8" cy="8" r="6.5" strokeDasharray={ringCircumference} strokeDashoffset={ringOffset} />
-              </svg>
-            )}
-            {onCooldown ? `Wait ${remainingSeconds}s` : running ? 'Running…' : runLabel}
+            {pyLoading ? 'Loading Python…' : running ? 'Running…' : cooling ? 'Wait…' : runLabel}
           </button>
           {error && (
             <div className="alert alert-danger" style={{ marginTop: 10, width: '100%' }}>
@@ -99,7 +92,13 @@ export default function PracticeQuestion({ groupId, worksheetId, question, showP
   const handleSubmitResponse = async (value) => {
     setResponseSubmitting(true);
     try {
-      const res = await groupsApi.submitResponse(groupId, worksheetId, question.question_id, value);
+      let extra;
+      if (question.problem_type === 'counterexample') {
+        const verdict = await gradeCounterexample({ content: question.content, values: value });
+        if (verdict.error) return; // best-effort in the practice view
+        extra = { is_correct: verdict.isCorrect };
+      }
+      const res = await groupsApi.submitResponse(groupId, worksheetId, question.question_id, value, extra);
       setResponse(value);
       setResponseCorrect(res.is_correct ?? null);
     } catch {
@@ -156,6 +155,7 @@ export default function PracticeQuestion({ groupId, worksheetId, question, showP
           groupId={groupId}
           worksheetId={worksheetId}
           questionId={question.question_id}
+          question={question}
           initialCode={question.code ?? question.starter_code}
           editorLabel="Your code — edit freely to practice"
           runLabel="Run tests"
@@ -181,6 +181,7 @@ export default function PracticeQuestion({ groupId, worksheetId, question, showP
               groupId={groupId}
               worksheetId={worksheetId}
               questionId={question.question_id}
+              question={question}
               initialCode={question.scratch_code}
               editorLabel="scratch"
               runLabel="Run tests on my scratch code"

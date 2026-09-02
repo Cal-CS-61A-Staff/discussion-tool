@@ -7,6 +7,7 @@ import PythonTutorPanel from '../components/student/PythonTutorPanel.jsx';
 import PredictionEditor from '../components/ta/PredictionEditor.jsx';
 import ProblemTypeEditor, { PROBLEM_TYPE_DEFAULT_CONTENT } from '../components/ta/ProblemTypeEditor.jsx';
 import * as adminApi from '../api/admin.js';
+import { resolvePredictionItems, validateReferenceSolution } from '../pyodide/authoring.js';
 
 const NEW_SLIDE_ID = 'new';
 
@@ -193,6 +194,9 @@ export default function TaAssignmentEditorPage() {
     setSaving(true);
     setSaveError('');
     setFailingCases(null);
+    const cleanCases = testCases
+      .map((c) => ({ call: c.call.trim(), expected: c.expected.trim() }))
+      .filter((c) => c.call && c.expected);
     const payload = {
       title: form.title.trim(),
       problem_type: form.problemType,
@@ -206,11 +210,42 @@ export default function TaAssignmentEditorPage() {
       reference_solution: form.referenceSolution,
       test_code: form.testCode,
       solution_markdown: form.solutionMarkdown,
-      test_cases: testCases
-        .map((c) => ({ call: c.call.trim(), expected: c.expected.trim() }))
-        .filter((c) => c.call && c.expected),
+      test_cases: cleanCases,
     };
     try {
+      // Grading moved in-browser: run the reference solution against the
+      // tests here and resolve output-prediction items, both of which the
+      // server's Docker grader used to do at save time.
+      const isCoding = form.problemType === 'coding';
+      const needsGrader = isCoding && ['simple', 'pltest', 'doctest'].includes(form.gradingMode);
+      if (needsGrader) {
+        const ref = await validateReferenceSolution({
+          gradingMode: form.gradingMode,
+          setupCode: form.setupCode,
+          testCases: cleanCases,
+          testCode: form.testCode,
+          referenceSolution: form.referenceSolution,
+        });
+        if (ref.error) {
+          setSaveError(ref.error);
+          if (ref.failingCases) setFailingCases(ref.failingCases);
+          setSaving(false);
+          return;
+        }
+      }
+      if (form.prediction?.mode === 'output') {
+        const resolved = await resolvePredictionItems({
+          prediction: form.prediction,
+          setupCode: form.setupCode,
+          referenceSolution: form.referenceSolution,
+        });
+        if (resolved.error) {
+          setSaveError(resolved.error);
+          setSaving(false);
+          return;
+        }
+        payload.prediction = { ...form.prediction, items: resolved.items };
+      }
       const res =
         selectedId === NEW_SLIDE_ID
           ? await adminApi.createQuestion(worksheetId, payload)

@@ -3,6 +3,12 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   plugins: [react()],
+  // Pyodide is self-hosted under /pyodide/ (copied from node_modules by
+  // scripts/copy-pyodide.mjs) and loaded at runtime by the grading worker
+  // via a dynamic import of an absolute URL. Keep the bundler from trying
+  // to resolve/inline it — same for the main bundle and the worker bundle.
+  build: { rollupOptions: { external: [/^\/pyodide\//] } },
+  worker: { rollupOptions: { external: [/^\/pyodide\//] } },
   server: {
     proxy: {
       '/api': {

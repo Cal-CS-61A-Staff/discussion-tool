@@ -14,7 +14,6 @@ from server.models.test_run import TestRun
 from server.models.worksheet import Question, Worksheet
 from server.services import advance as advance_service
 from server.services import cooldown as cooldown_service
-from server.services import grader_cooldown as grader_cooldown_service
 from server.models.group_prediction import GroupPrediction
 from server.services import presence
 from server.services import response_grading
@@ -185,6 +184,12 @@ def build_group_state(group, progress, user, state):
             "starter_code": question.starter_code,
             "language": question.language,
             "grading_mode": question.grading_mode,
+            # Grading runs in the browser now (Pyodide), so the harness needs
+            # the setup + test code client-side. For a discussion tool having
+            # students able to read the tests is an acceptable trade
+            # (doctest questions already show them).
+            "setup_code": question.setup_code or "",
+            "test_code": question.test_code or "",
             # 'coding' behaves exactly as before; other values drive a
             # non-code answer widget on the client. `content` here is the
             # answer-stripped public view (see response_grading).
@@ -203,10 +208,6 @@ def build_group_state(group, progress, user, state):
         "cooldown": {
             "active": cooldown_service.is_active(progress),
             "remaining_seconds": cooldown_service.remaining_seconds(progress),
-        },
-        "grader_cooldown": {
-            "remaining_seconds": grader_cooldown_service.remaining_seconds(user),
-            "cooldown_seconds": grader_cooldown_service.cooldown_seconds_for(user),
         },
         "members": member_payload,
         "my_rating_value": my_rating,
@@ -554,6 +555,8 @@ def build_group_work(group, worksheet_id, user):
                 "group_response_correct": group_answer_correct,
                 "code": latest_run.code_snapshot if latest_run else None,
                 "starter_code": question.starter_code or "",
+                "setup_code": question.setup_code or "",
+                "test_code": question.test_code or "",
                 "passed": advance_service.has_ever_passed_tests(group.id, question.id),
                 "scratch_code": scratch.code if scratch and scratch.code else None,
                 "my_rating": rating.value if rating else None,

@@ -372,43 +372,33 @@ def test_practice_run_route_allows_an_already_unlocked_earlier_question(app, cli
     progress.current_question_index = 1  # group has moved on to question 1
     db.session.commit()
 
-    monkeypatch.setattr(
-        "server.blueprints.groups.grading_queue_service.enqueue_grading_job", lambda *a, **kw: None
-    )
     login_as(client, users[0])
 
     resp = client.post(
         f"/api/groups/{group.id}/worksheets/{progress.worksheet_id}/questions/{question_0.id}/practice-run",
-        json={"code": "def f(): return 1"},
+        json={"code": "def f(): return 1", "results": {"passed_count": 1, "total_count": 1, "test_results": []}},
     )
 
-    assert resp.status_code == 202
-    assert resp.get_json()["status"] == "pending"
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "done"
 
 
-def test_practice_run_enqueues_a_grading_job(app, client, monkeypatch):
-    """Browsing back to an earlier question can re-run its tests for
-    practice without touching the group's real progress."""
+def test_practice_run_records_a_client_graded_result(app, client):
+    """Grading happens in the browser (Pyodide); practice-run just persists
+    the result the client computed, without touching group progress."""
     from server.tests.conftest import login_as
+    from server.models.test_run import TestRun
 
     group, progress, question_0, users = _make_group_with_members(1)
-
-    enqueued = {}
-    monkeypatch.setattr(
-        "server.blueprints.groups.grading_queue_service.enqueue_grading_job",
-        lambda test_run_id, predict_call, student_prediction, cooldown_seconds: enqueued.update(
-            predict_call=predict_call, student_prediction=student_prediction
-        ),
-    )
-    monkeypatch.setattr("server.blueprints.groups.grader_cooldown_service.try_acquire", lambda user: True)
     login_as(client, users[0])
 
     resp = client.post(
         f"/api/groups/{group.id}/worksheets/{progress.worksheet_id}/questions/{question_0.id}/practice-run",
-        json={"code": "def f(): return 1"},
+        json={"code": "def f(): return 1", "results": {"passed_count": 2, "total_count": 3, "test_results": []}},
     )
-    assert resp.status_code == 202
-    assert enqueued["predict_call"] is None
+    assert resp.status_code == 200
+    run = TestRun.query.filter_by(group_id=group.id, source="practice").one()
+    assert run.status == "done" and run.passed_count == 2 and run.total_count == 3
 
 
 def test_practice_run_route_rejects_a_not_yet_unlocked_question(app, client):
@@ -762,27 +752,26 @@ def test_group_routes_reject_a_worksheet_from_a_different_class(app, client):
     assert resp.status_code == 200
 
 
-def test_run_tests_enqueues_a_grading_job(app, client, monkeypatch):
-    """run_tests hands the submission to the grading queue. The old inline
-    prediction quiz is retired — predict_call is always None now (the
-    optional prediction prompt has its own submit endpoint)."""
+def test_run_tests_records_the_client_graded_result(app, client):
+    """Grading runs in the browser (Pyodide); run_tests just persists the
+    result the client sends onto a TestRun row."""
     from server.tests.conftest import login_as
+    from server.models.test_run import TestRun
 
     group, progress, question, users = _make_group_with_members(1)
-
-    enqueued = {}
-    monkeypatch.setattr(
-        "server.blueprints.groups.grading_queue_service.enqueue_grading_job",
-        lambda test_run_id, predict_call, student_prediction, cooldown_seconds: enqueued.update(
-            predict_call=predict_call, student_prediction=student_prediction
-        ),
-    )
     login_as(client, users[0])
 
     resp = client.post(
         f"/api/groups/{group.id}/run-tests",
-        json={"worksheet_id": progress.worksheet_id, "source": "scratch", "code": "def f(): return 1"},
+        json={
+            "worksheet_id": progress.worksheet_id,
+            "source": "scratch",
+            "code": "def f(): return 1",
+            "results": {"passed_count": 1, "total_count": 1, "test_results": [{"name": "t", "passed": True}]},
+        },
     )
 
-    assert resp.status_code == 202
-    assert enqueued["predict_call"] is None
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "done"
+    run = TestRun.query.filter_by(group_id=group.id, source="scratch").one()
+    assert run.status == "done" and run.passed_count == 1 and run.total_count == 1

@@ -1,36 +1,28 @@
 import TestResultsPanel from './TestResultsPanel.jsx';
 import { useTestRunner } from '../../hooks/useTestRunner.js';
 
-export default function TestRunner({ groupId, worksheetId, source, code, disabled, label, graderCooldown, lastSharedRun }) {
-  const { results, running, error, run, remainingSeconds, cooldownSeconds } = useTestRunner(
-    groupId,
-    worksheetId,
-    source,
-    graderCooldown
-  );
+export default function TestRunner({ groupId, worksheetId, source, code, question, disabled, label, lastSharedRun }) {
+  const { results, running, error, run, pyLoading, cooling } = useTestRunner(groupId, worksheetId, source, question);
 
-  // Only the browser that clicked "Run tests" ever populates local
-  // `results` — for the shared editor, fall back to the group's last
-  // shared run (server-computed, same for everyone) so teammates who
-  // didn't do the typing still see the same pass/fail confirmation.
+  // Only the browser that clicked "Run tests" populates local `results` —
+  // for the shared editor, fall back to the group's last shared run so
+  // teammates who didn't type still see the same pass/fail.
   const displayResults = results || lastSharedRun || null;
   const isSomeoneElsesRun = !results && Boolean(lastSharedRun);
 
-  const onCooldown = remainingSeconds > 0;
-  const canRun = !disabled && !running && !onCooldown && Boolean(code && code.trim());
-  const ringCircumference = 2 * Math.PI * 6.5;
-  const ringOffset =
-    cooldownSeconds > 0 ? ringCircumference * (1 - remainingSeconds / cooldownSeconds) : ringCircumference;
+  const canRun = !disabled && !running && !cooling && !pyLoading && Boolean(code && code.trim());
+  const buttonText = pyLoading
+    ? 'Loading Python…'
+    : running
+      ? 'Running…'
+      : cooling
+        ? 'Wait…'
+        : label || 'Run tests';
 
   return (
     <div className="predict-row" style={{ marginTop: 14 }}>
-      <button className="btn btn-primary run-btn" onClick={() => run(code, '')} disabled={!canRun}>
-        {onCooldown && (
-          <svg className="cooldown-ring" viewBox="0 0 16 16">
-            <circle cx="8" cy="8" r="6.5" strokeDasharray={ringCircumference} strokeDashoffset={ringOffset} />
-          </svg>
-        )}
-        {onCooldown ? `Wait ${remainingSeconds}s` : running ? 'Running…' : label || 'Run tests'}
+      <button className="btn btn-primary run-btn" onClick={() => run(code)} disabled={!canRun}>
+        {buttonText}
       </button>
       {error && (
         <div className="alert alert-danger" style={{ marginTop: 10, width: '100%' }}>

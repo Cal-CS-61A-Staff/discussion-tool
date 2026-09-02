@@ -5,13 +5,15 @@ from server.utils import utcnow
 class TestRun(db.Model):
     """One autograder invocation. `source` distinguishes a run against the
     group's shared editor code from a run against a student's private
-    scratch editor — see server/services/grading.py.
+    scratch editor.
 
-    Grading itself happens out-of-process (server/services/grading_jobs.py,
-    run by server/worker.py via RQ) so a Docker-bound submission doesn't
-    block a web worker. A row is created with status="pending" the moment
-    the run is accepted and filled in by the worker when Docker finishes —
-    see GET /groups/:id/run-tests/:test_run_id in server/blueprints/groups.py.
+    Grading runs in the student's browser (Pyodide — client/src/pyodide/);
+    the client POSTs the computed {passed_count, total_count, results_json}
+    and the row is written straight away with status="done". The server
+    trusts the result, which is acceptable for participation-graded
+    discussion — code_snapshot is still stored so a run could be re-graded
+    later if that ever changes. See POST /groups/:id/run-tests in
+    server/blueprints/groups.py.
     """
 
     __tablename__ = "test_runs"

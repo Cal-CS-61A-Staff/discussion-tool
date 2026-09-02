@@ -59,15 +59,16 @@ class Question(db.Model):
     # {answer, accept, case_sensitive}, {url, alt}, etc. NULL for 'coding'.
     content_json = db.Column(db.Text, nullable=True)
 
-    # Autograder fields (server/services/grading.py). setup_code is a shared
-    # preamble (e.g. the Tree class def) executed before both setup and
-    # student code. grading_mode selects which harness path runs in the
-    # grader container: 'pltest' expects test_code defining a
-    # `class Test(PLTestCase)` (grader/harness/pl_unit_test.py); 'doctest'
-    # ignores test_code and instead runs the >>> examples already in the
-    # student's own function docstrings (grader/harness/doctest_runner.py);
-    # 'discussion' has no autograder at all (no starter_code/test_code) —
-    # a conceptual/paper question, e.g. an environment-diagram trace.
+    # Autograder fields. Grading runs in the browser now (Pyodide —
+    # client/src/pyodide/harness.py). setup_code is a shared preamble (e.g.
+    # the Tree class def) executed before both setup and student code.
+    # grading_mode selects which harness path runs: 'pltest' expects
+    # test_code defining a `class Test(PLTestCase)`; 'simple' generates that
+    # test_code from TA {call, expected} pairs
+    # (server/services/test_case_grading.py); 'doctest' ignores test_code
+    # and runs the >>> examples already in the student's own function
+    # docstrings; 'discussion' has no autograder at all (no
+    # starter_code/test_code) — a conceptual/paper question.
     setup_code = db.Column(db.Text, default="")
     test_code = db.Column(db.Text, default="")
     grading_mode = db.Column(db.String(20), nullable=False, default="pltest")

@@ -36,15 +36,11 @@ set +a
 
 server/.venv/bin/pip install --quiet -r server/requirements.txt
 FLASK_APP=server.app server/.venv/bin/flask db upgrade
-docker build -t discussion-grader:latest ./grader
 cd client && npm install --silent && npm run build
 EOF
 
 echo "==> Restarting services"
 sudo systemctl restart cs61a-discussion-web
-for unit in $(systemctl list-units 'cs61a-grading-worker@*' --all --plain --no-legend | awk '{print $1}'); do
-  sudo systemctl restart "$unit"
-done
 
 echo "==> Waiting for the web app to come back up"
 sleep 2

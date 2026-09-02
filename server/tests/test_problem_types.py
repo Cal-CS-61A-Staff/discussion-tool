@@ -245,12 +245,22 @@ def _make_question(worksheet_id, prediction=None):
 
 
 def test_validate_prediction_modes():
-    clean, err = response_grading.validate_prediction({"mode": "output", "calls": ["fizzbuzz(5)", "fizzbuzz(15)"]})
-    assert err is None and clean["calls"] == ["fizzbuzz(5)", "fizzbuzz(15)"] and clean["items"] == []
+    # The editor resolves each call's output in the browser and sends `items`;
+    # validate_prediction shape-checks that they line up with `calls`.
+    ok_items = [{"code": "fizzbuzz(5)", "expected": "1\n2\nfizz"}, {"code": "fizzbuzz(15)", "expected": "..."}]
+    clean, err = response_grading.validate_prediction(
+        {"mode": "output", "calls": ["fizzbuzz(5)", "fizzbuzz(15)"], "items": ok_items}
+    )
+    assert err is None and clean["calls"] == ["fizzbuzz(5)", "fizzbuzz(15)"] and len(clean["items"]) == 2
     # calls can also arrive as a newline string from the editor textarea.
-    clean, err = response_grading.validate_prediction({"mode": "output", "calls": "fizzbuzz(5)\n\nfizzbuzz(15)\n"})
+    clean, err = response_grading.validate_prediction(
+        {"mode": "output", "calls": "fizzbuzz(5)\n\nfizzbuzz(15)\n", "items": ok_items}
+    )
     assert err is None and clean["calls"] == ["fizzbuzz(5)", "fizzbuzz(15)"]
-    _, err = response_grading.validate_prediction({"mode": "output", "calls": []})
+    # items missing / count mismatch -> rejected
+    _, err = response_grading.validate_prediction({"mode": "output", "calls": ["fizzbuzz(5)"], "items": []})
+    assert err is not None
+    _, err = response_grading.validate_prediction({"mode": "output", "calls": [], "items": []})
     assert err is not None
     clean, err = response_grading.validate_prediction({"mode": "written", "prompt": "why?"})
     assert err is None and clean == {"mode": "written", "prompt": "why?"}

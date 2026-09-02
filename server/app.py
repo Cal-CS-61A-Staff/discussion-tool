@@ -82,7 +82,6 @@ def create_app(config_object=None):
     _register_seed_command(app)
     _register_create_admin_command(app)
     _register_import_roster_command(app)
-    _register_grading_worker_command(app)
     _register_spa_routes(app)
 
     return app
@@ -154,25 +153,6 @@ def _register_import_roster_command(app):
                 f"Sections: {summary['sections_created']} created, "
                 f"{summary['sections_assigned']} assignments made."
             )
-
-
-def _register_grading_worker_command(app):
-    @app.cli.command("grading-worker")
-    def grading_worker_command():
-        """Run one grading worker: pulls jobs off the Redis-backed "grading"
-        queue (server/services/grading_queue.py) and runs the real Docker
-        container for each (server/services/grading_jobs.py). Each worker
-        process handles one job — and therefore one Docker container — at a
-        time, so run as many processes as you want concurrent containers
-        (see README "Grading concurrency" for sizing this against real
-        hardware, and for process-supervision options).
-        """
-        from redis import Redis
-        from rq import Worker
-
-        with app.app_context():
-            conn = Redis.from_url(app.config["REDIS_URL"])
-            Worker(["grading"], connection=conn).work()
 
 
 def _register_spa_routes(app):

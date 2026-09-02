@@ -30,29 +30,16 @@ class Config:
     STUCK_THRESHOLD_SECONDS = 360
     MAX_GROUP_SIZE = 4
 
-    # Per-user autograder rate limit (separate from COOLDOWN_SECONDS above,
-    # which is group-wide and specific to the predict/run flow). Escalates
-    # the more a user runs in quick succession — 10s normally, stepping up
-    # every GRADER_COOLDOWN_STEP_TRIES tries, capped at the last entry — so
-    # someone spamming "Run tests" gets throttled harder over time instead
-    # of a flat wait that's either too lenient for abuse or too strict for
-    # normal use (see server/services/grader_cooldown.py).
-    GRADER_COOLDOWN_STEPS = [10, 30, 60, 120, 180]
-    GRADER_COOLDOWN_STEP_TRIES = 3
-    GRADER_IMAGE = os.environ.get("GRADER_IMAGE", "discussion-grader:latest")
-    GRADER_CONTAINER_TIMEOUT_SECONDS = 15
-    GRADER_DOCKER_CLI_TIMEOUT_SECONDS = 10
+    # Grading runs in the student's browser now (Pyodide — client/src/pyodide/),
+    # so there's no Docker, no grading queue, and no server-side per-run rate
+    # limit — "Run tests" costs the server nothing but a row insert. The
+    # client keeps a small fixed debounce between runs.
 
-    # A "Run tests" click enqueues a grading job (server/services/grading_jobs.py)
-    # onto this Redis-backed queue instead of running Docker inline on a web
-    # worker — `flask grading-worker` runs the actual container per job. How
-    # many concurrent Docker containers this allows is just how many worker
-    # processes you run, not a value here (see README "Grading concurrency").
-    REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-    # Shared across gunicorn worker processes so the /login and /admin-login
-    # limits below (server/blueprints/auth.py) actually hold under multiple
-    # workers, not just per-process. Defaults to the same Redis as grading.
-    RATELIMIT_STORAGE_URI = os.environ.get("RATELIMIT_STORAGE_URI", REDIS_URL)
+    # Rate-limit storage for the /login limits below
+    # (server/blueprints/auth.py). In-memory by default now that Redis is no
+    # longer needed for grading; set RATELIMIT_STORAGE_URI to a Redis URL if
+    # you run multiple gunicorn workers and want the limit shared across them.
+    RATELIMIT_STORAGE_URI = os.environ.get("RATELIMIT_STORAGE_URI", "memory://")
     # Real deployments never need to touch this — it's here so a load test
     # (deploy/loadtest/) can isolate what it's actually measuring: many
     # synthetic VUs logging in from one IP in a tight window will otherwise
@@ -97,13 +84,3 @@ def validate_prod_config(app):
         raise RuntimeError("Set DATABASE_URL to a Postgres connection string before running in production.")
     if not app.config["GOOGLE_CLIENT_ID"] or not app.config["GOOGLE_CLIENT_SECRET"]:
         raise RuntimeError("Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET before running in production.")
-
-    from redis import Redis
-    from redis.exceptions import RedisError
-
-    try:
-        Redis.from_url(app.config["REDIS_URL"]).ping()
-    except RedisError as e:
-        raise RuntimeError(
-            f"Could not reach Redis at REDIS_URL ({app.config['REDIS_URL']}) — grading jobs need it. {e}"
-        )
