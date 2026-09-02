@@ -1,115 +1,100 @@
-"""Covers TA-scoped-to-one-section access control, the admin role (grantable
-out of band via server/app.py:create-admin, or by an existing admin through
-POST /api/admins), and the group discussion history endpoint. Companion to
-test_publishing.py, which already covers the plain student/ta
-draft-visibility split this builds on top of.
+"""Per-class roles: staff standing lives on ClassMembership, not the global
+User.role (only 'admin' is global now). Covers the class-scoped access
+checks, room listing, room-TA assignment, group history visibility, and
+admin granting.
 """
 
 from server.extensions import db
 from server.models.group import Group, GroupAssignmentProgress, GroupMembership
-from server.models.klass import Class
+from server.models.klass import ClassMembership
 from server.models.section import Section
 from server.models.user import User
 from server.models.worksheet import Question, Worksheet
-from server.tests.conftest import login_as
+from server.tests.conftest import add_member, login_as, make_class
 
 
-def _make_two_sections_with_tas():
-    ta_a = User(display_name="TA A", role="ta")
-    ta_b = User(display_name="TA B", role="ta")
+def _two_classes_with_staff():
+    staff_a = User(display_name="Staff A", role="student")
+    staff_b = User(display_name="Staff B", role="student")
     admin = User(display_name="Admin", role="admin")
-    db.session.add_all([ta_a, ta_b, admin])
+    db.session.add_all([staff_a, staff_b, admin])
     db.session.flush()
 
-    klass = Class(course_name="C")
-    db.session.add(klass)
-    db.session.flush()
+    class_a = make_class("CS 61A", "AAAAAA")
+    class_b = make_class("CS 88", "BBBBBB")
+    add_member(staff_a, class_a, "staff")
+    add_member(staff_b, class_b, "staff")
 
-    section_a = Section(class_id=klass.id, name="Section A", ta_user_id=ta_a.id)
-    section_b = Section(class_id=klass.id, name="Section B", ta_user_id=ta_b.id)
-    db.session.add_all([section_a, section_b])
+    room_a = Section(class_id=class_a.id, name="Room A", ta_user_id=staff_a.id, assigned_numbers="1-4")
+    room_b = Section(class_id=class_b.id, name="Room B", ta_user_id=staff_b.id, assigned_numbers="1-4")
+    db.session.add_all([room_a, room_b])
     db.session.commit()
-    return section_a, section_b, ta_a, ta_b, admin
+    return class_a, class_b, room_a, room_b, staff_a, staff_b, admin
 
 
-def test_ta_cannot_see_another_tas_section_groups(app, client):
-    section_a, section_b, ta_a, ta_b, _admin = _make_two_sections_with_tas()
-    group = Group(section_id=section_a.id, number=1, name="G1")
-    db.session.add(group)
+def test_list_sections_scoped_to_staffed_classes(app, client):
+    _class_a, _class_b, room_a, room_b, staff_a, _staff_b, admin = _two_classes_with_staff()
+
+    login_as(client, staff_a)
+    ids = {s["id"] for s in client.get("/api/sections").get_json()["sections"]}
+    assert ids == {room_a.id}
+
+    login_as(client, admin)
+    ids = {s["id"] for s in client.get("/api/sections").get_json()["sections"]}
+    assert ids == {room_a.id, room_b.id}
+
+
+def test_user_with_no_staff_membership_sees_no_rooms(app, client):
+    _two_classes_with_staff()
+    nobody = User(display_name="Nobody", role="student")
+    db.session.add(nobody)
     db.session.commit()
 
-    login_as(client, ta_b)
-    resp = client.get(f"/api/sections/{section_a.id}/groups")
+    login_as(client, nobody)
+    assert client.get("/api/sections").get_json()["sections"] == []
+
+
+def test_staff_of_one_class_cannot_touch_another_classes_rooms(app, client):
+    _class_a, _class_b, _room_a, room_b, staff_a, _staff_b, _admin = _two_classes_with_staff()
+
+    login_as(client, staff_a)
+    resp = client.put(f"/api/sections/{room_b.id}/details", json={"name": "hijacked"})
     assert resp.status_code == 403
 
-    login_as(client, ta_a)
-    resp = client.get(f"/api/sections/{section_a.id}/groups")
-    assert resp.status_code == 200
 
-
-def test_admin_can_manage_any_section(app, client):
-    section_a, _section_b, _ta_a, _ta_b, admin = _make_two_sections_with_tas()
-
-    login_as(client, admin)
-    resp = client.get(f"/api/sections/{section_a.id}/groups")
-    assert resp.status_code == 200
-
-    resp = client.post(f"/api/sections/{section_a.id}/groups", json={"count": 1})
-    assert resp.status_code == 201
-
-
-def test_list_sections_scoped_to_own_ta(app, client):
-    section_a, section_b, ta_a, _ta_b, admin = _make_two_sections_with_tas()
-
-    login_as(client, ta_a)
-    resp = client.get("/api/sections")
-    ids = {s["id"] for s in resp.get_json()["sections"]}
-    assert ids == {section_a.id}
-
-    login_as(client, admin)
-    resp = client.get("/api/sections")
-    ids = {s["id"] for s in resp.get_json()["sections"]}
-    assert ids == {section_a.id, section_b.id}
-
-
-def test_unassigned_ta_sees_no_sections(app, client):
-    _section_a, _section_b, _ta_a, _ta_b, _admin = _make_two_sections_with_tas()
-    unassigned_ta = User(display_name="Unassigned", role="ta")
-    db.session.add(unassigned_ta)
+def test_only_admin_can_assign_room_ta(app, client):
+    class_a, _class_b, room_a, _room_b, staff_a, _staff_b, admin = _two_classes_with_staff()
+    other_staff = User(display_name="Other", role="student")
+    db.session.add(other_staff)
+    db.session.flush()
+    add_member(other_staff, class_a, "staff")
     db.session.commit()
 
-    login_as(client, unassigned_ta)
-    resp = client.get("/api/sections")
-    assert resp.get_json()["sections"] == []
-
-
-def test_only_admin_can_assign_section_ta(app, client):
-    section_a, _section_b, ta_a, ta_b, admin = _make_two_sections_with_tas()
-
-    login_as(client, ta_a)
-    resp = client.put(f"/api/sections/{section_a.id}/ta", json={"ta_user_id": ta_b.id})
+    login_as(client, staff_a)
+    resp = client.put(f"/api/sections/{room_a.id}/ta", json={"ta_user_id": other_staff.id})
     assert resp.status_code == 403
 
     login_as(client, admin)
-    resp = client.put(f"/api/sections/{section_a.id}/ta", json={"ta_user_id": ta_b.id})
+    resp = client.put(f"/api/sections/{room_a.id}/ta", json={"ta_user_id": other_staff.id})
     assert resp.status_code == 200
-    assert resp.get_json()["section"]["ta_id"] == ta_b.id
+    assert resp.get_json()["section"]["ta_id"] == other_staff.id
 
-    student = User(display_name="Student", role="student")
-    db.session.add(student)
+    # A person who isn't staff of this class can't be its room TA.
+    stranger = User(display_name="Stranger", role="student")
+    db.session.add(stranger)
     db.session.commit()
-    resp = client.put(f"/api/sections/{section_a.id}/ta", json={"ta_user_id": student.id})
+    resp = client.put(f"/api/sections/{room_a.id}/ta", json={"ta_user_id": stranger.id})
     assert resp.status_code == 400
 
 
-def test_group_history_visible_to_member_and_owning_ta_only(app, client):
-    section_a, _section_b, ta_a, ta_b, _admin = _make_two_sections_with_tas()
-    worksheet = Worksheet(class_id=section_a.class_id, slug="w1", title="Disc 1", is_published=True)
+def test_group_history_visible_to_member_and_class_staff_only(app, client):
+    class_a, _class_b, _room_a, _room_b, staff_a, staff_b, _admin = _two_classes_with_staff()
+    worksheet = Worksheet(class_id=class_a.id, slug="w1", title="Disc 1", is_published=True)
     db.session.add(worksheet)
     db.session.flush()
     db.session.add(Question(worksheet_id=worksheet.id, order_index=0, title="Q1", prompt="p"))
 
-    group = Group(section_id=section_a.id, number=1, name="G1")
+    group = Group(class_id=class_a.id, number=1, name="G1")
     db.session.add(group)
     db.session.flush()
 
@@ -124,63 +109,79 @@ def test_group_history_visible_to_member_and_owning_ta_only(app, client):
     login_as(client, member)
     resp = client.get(f"/api/groups/{group.id}/history")
     assert resp.status_code == 200
-    history = resp.get_json()["history"]
-    assert len(history) == 1
-    assert history[0]["status"] == "completed"
+    assert resp.get_json()["history"][0]["status"] == "completed"
 
     login_as(client, outsider)
-    resp = client.get(f"/api/groups/{group.id}/history")
-    assert resp.status_code == 403
+    assert client.get(f"/api/groups/{group.id}/history").status_code == 403
 
-    login_as(client, ta_a)
-    resp = client.get(f"/api/groups/{group.id}/history")
-    assert resp.status_code == 200
+    login_as(client, staff_a)  # staff of this class
+    assert client.get(f"/api/groups/{group.id}/history").status_code == 200
 
-    login_as(client, ta_b)
-    resp = client.get(f"/api/groups/{group.id}/history")
-    assert resp.status_code == 403
+    login_as(client, staff_b)  # staff of a different class
+    assert client.get(f"/api/groups/{group.id}/history").status_code == 403
 
 
 def test_admin_can_grant_admin_role(app, client):
-    _section_a, _section_b, ta_a, _ta_b, admin = _make_two_sections_with_tas()
-    ta_a.email = "ta_a@berkeley.edu"
+    class_a, _class_b, _room_a, _room_b, staff_a, _staff_b, admin = _two_classes_with_staff()
+    staff_a.email = "staff_a@berkeley.edu"
     db.session.commit()
 
-    # A plain TA can't reach the endpoint at all.
-    login_as(client, ta_a)
-    resp = client.post("/api/admins", json={"email": "ta_a@berkeley.edu"})
-    assert resp.status_code == 403
+    login_as(client, staff_a)
+    assert client.post("/api/admins", json={"email": "staff_a@berkeley.edu"}).status_code == 403
 
-    # An admin can promote an existing TA — role flips, and (superset) the
-    # section they owned is still theirs.
     login_as(client, admin)
-    resp = client.post("/api/admins", json={"email": "TA_A@berkeley.edu"})
+    resp = client.post("/api/admins", json={"email": "STAFF_A@berkeley.edu"})
     assert resp.status_code == 201
     assert resp.get_json()["admin"]["role"] == "admin"
-    assert ta_a.role == "admin"
+    assert staff_a.role == "admin"
 
-    # A brand-new email creates the account with the admin role.
     resp = client.post("/api/admins", json={"email": "fresh@berkeley.edu", "name": "Fresh"})
     assert resp.status_code == 201
     created = User.query.filter_by(email="fresh@berkeley.edu").first()
-    assert created is not None
-    assert created.role == "admin"
-    assert created.display_name == "Fresh"
+    assert created is not None and created.role == "admin" and created.display_name == "Fresh"
 
-    # Missing / malformed email is rejected.
-    resp = client.post("/api/admins", json={"email": "not-an-email"})
-    assert resp.status_code == 400
+    assert client.post("/api/admins", json={"email": "not-an-email"}).status_code == 400
 
 
 def test_admin_login_requires_admin_role(app, client):
     admin = User(display_name="Admin", role="admin")
-    ta = User(display_name="TA", role="ta")
-    db.session.add_all([admin, ta])
+    plain = User(display_name="Plain", role="student")
+    db.session.add_all([admin, plain])
     db.session.commit()
 
     resp = client.post("/api/auth/admin-login", json={"admin_id": admin.id})
     assert resp.status_code == 200
     assert resp.get_json()["user"]["role"] == "admin"
 
-    resp = client.post("/api/auth/admin-login", json={"admin_id": ta.id})
-    assert resp.status_code == 404
+    assert client.post("/api/auth/admin-login", json={"admin_id": plain.id}).status_code == 404
+
+
+def test_join_class_by_code_and_scoping(app, client):
+    class_a, class_b, _room_a, _room_b, _staff_a, _staff_b, _admin = _two_classes_with_staff()
+    worksheet = Worksheet(class_id=class_b.id, slug="wb", title="B Disc", is_published=True)
+    db.session.add(worksheet)
+    db.session.commit()
+
+    student = User(display_name="Stu", role="student")
+    db.session.add(student)
+    db.session.commit()
+    login_as(client, student)
+
+    # Not in class_b yet — can't see its assignments.
+    assert client.get(f"/api/classes/{class_b.id}/worksheets").status_code == 403
+
+    resp = client.post("/api/classes/join", json={"code": "bbbbbb"})  # case-insensitive
+    assert resp.status_code == 200
+    assert resp.get_json()["klass"]["my_role"] == "student"
+    assert ClassMembership.query.filter_by(user_id=student.id, class_id=class_b.id).count() == 1
+
+    resp = client.get(f"/api/classes/{class_b.id}/worksheets")
+    assert resp.status_code == 200
+    assert [w["title"] for w in resp.get_json()["worksheets"]] == ["B Disc"]
+
+    # class_a still invisible.
+    assert client.get("/api/classes").get_json()["classes"] == [
+        c for c in client.get("/api/classes").get_json()["classes"] if c["id"] == class_b.id
+    ]
+
+    assert client.post("/api/classes/join", json={"code": "NOPE99"}).status_code == 404

@@ -6,6 +6,9 @@ import * as sectionsApi from '../api/sections.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { isStaff } from '../utils/roles.js';
 
+const staffClasses = (classes, user) =>
+  classes.filter((c) => user?.role === 'admin' || c.my_role === 'staff');
+
 export default function DiscussionsPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -24,7 +27,7 @@ export default function DiscussionsPage() {
     setLoading(true);
     sectionsApi
       .listClasses()
-      .then((res) => setClasses(res.classes))
+      .then((res) => setClasses(staffClasses(res.classes, user)))
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   };
@@ -63,7 +66,7 @@ export default function DiscussionsPage() {
       <div className="page-header-row">
         <div>
           <h1>Discussions</h1>
-          <p>{isAdmin ? 'Every class — click one to manage its sections.' : 'Classes you teach or co-teach in.'}</p>
+          <p>{isAdmin ? 'Every class — click one to manage its rooms and staff.' : 'Classes you teach or co-teach in.'}</p>
         </div>
         {classes.length > 1 && (
           <div className="form-group" style={{ marginBottom: 0 }}>
@@ -82,7 +85,7 @@ export default function DiscussionsPage() {
           <thead>
             <tr>
               <th>Class</th>
-              <th>Sections</th>
+              <th>Rooms</th>
             </tr>
           </thead>
           <tbody>

@@ -17,11 +17,14 @@ import * as groupsApi from '../api/groups.js';
 import { usePolling } from '../hooks/usePolling.js';
 
 export default function StudentWorksheetPage() {
-  const { sectionId, worksheetId, groupId } = useParams();
+  const { classId, worksheetId, groupId } = useParams();
   const navigate = useNavigate();
 
   const [localCode, setLocalCode] = useState('');
   const [actionError, setActionError] = useState('');
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
+  const [savingName, setSavingName] = useState(false);
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
   const [advancing, setAdvancing] = useState(false);
   const [givingUp, setGivingUp] = useState(false);
@@ -137,10 +140,29 @@ export default function StudentWorksheetPage() {
   // show the join-a-group chooser, which makes no sense to land on when
   // you were just working solo. Skip straight past it to the assignments
   // list instead.
+  const saveGroupName = async () => {
+    const next = nameDraft.trim();
+    if (!next || next === data.group.name) {
+      setEditingName(false);
+      return;
+    }
+    setSavingName(true);
+    setActionError('');
+    try {
+      await groupsApi.updateGroupName(groupId, next);
+      setEditingName(false);
+      refetch();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setSavingName(false);
+    }
+  };
+
   const backToAssignment = () =>
     data.group.is_individual
       ? navigate('/assignments')
-      : navigate(`/classes/${sectionId}/assignments/${worksheetId}`);
+      : navigate(`/classes/${classId}/assignments/${worksheetId}`);
 
   const breadcrumb = (
     <div className="breadcrumb-row">
@@ -312,7 +334,44 @@ export default function StudentWorksheetPage() {
       )}
       <div className="page-header-row" style={{ marginTop: 0 }}>
         <div>
-          <h1>{data.group.name}</h1>
+          {editingName ? (
+            <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+              <input
+                className="form-control"
+                style={{ maxWidth: 260, fontSize: 20 }}
+                value={nameDraft}
+                autoFocus
+                onChange={(e) => setNameDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') setEditingName(false);
+                  if (e.key === 'Enter') saveGroupName();
+                }}
+              />
+              <button className="btn btn-sm btn-primary" type="button" onClick={saveGroupName} disabled={savingName}>
+                {savingName ? '…' : 'Save'}
+              </button>
+              <button className="btn btn-sm" type="button" onClick={() => setEditingName(false)}>
+                Cancel
+              </button>
+            </span>
+          ) : (
+            <h1 style={{ display: 'inline-flex', gap: 10, alignItems: 'center' }}>
+              {data.group.name}
+              {!data.group.is_individual && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  title="Rename group"
+                  onClick={() => {
+                    setNameDraft(data.group.name);
+                    setEditingName(true);
+                  }}
+                >
+                  ✎
+                </button>
+              )}
+            </h1>
+          )}
           <p style={{ margin: '2px 0 0', fontSize: 13, color: 'var(--muted)' }}>{data.worksheet_title}</p>
         </div>
         <span style={{ fontSize: 13, color: 'var(--muted)' }}>

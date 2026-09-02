@@ -7,15 +7,15 @@ class User(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     display_name = db.Column(db.String(80), nullable=False)
-    # 'student' | 'ta' | 'admin'. Unlike student/ta (self-selected at
-    # login — see blueprints/auth.py), 'admin' is never offered on the
-    # login form: it's granted out of band — seed data, the `create-admin`
-    # CLI (server/app.py), or an existing admin via the Admin page
-    # (POST /api/admins) — mirroring how a real Canvas/bCourses "admin"
-    # designation comes from the roster/enrollment system rather than
-    # something a user picks. It's a single column, and 'admin' is a strict
-    # superset of 'ta'/'student' (server/auth.py), so a promotion is
-    # additive: the person keeps every ability their old role had.
+    # Global role, now only two meaningful values:
+    #   'student' — the default for every login; per-class standing (student
+    #               vs staff) lives on ClassMembership (server/models/klass.py),
+    #               not here, so someone can be staff of one class and a
+    #               student of another.
+    #   'admin'   — out-of-band super-user (seed data, `flask create-admin`,
+    #               or POST /api/admins). Bypasses every per-class check.
+    # The old 'ta' value is retired — it no longer grants anything; a
+    # migration rewrites existing 'ta' rows to 'student'.
     role = db.Column(db.String(10), nullable=False)
     # Optional today (the login form doesn't require it) — but when given,
     # it's the identity key roster imports match against (see

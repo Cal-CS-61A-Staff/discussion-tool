@@ -7,6 +7,8 @@ from server.models.group import Group
 from server.models.klass import Class
 from server.models.section import Section
 from server.models.worksheet import Question, Worksheet
+from server.services.number_spec import format_number_spec
+from server.utils import generate_join_code
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -90,24 +92,30 @@ def _upsert_worksheet(data):
 def _upsert_class(course_name):
     klass = Class.query.filter_by(course_name=course_name).first()
     if klass is None:
-        klass = Class(course_name=course_name)
+        code = generate_join_code()
+        while Class.query.filter_by(join_code=code).first() is not None:
+            code = generate_join_code()
+        klass = Class(course_name=course_name, join_code=code)
         db.session.add(klass)
         db.session.commit()
+        print(f"  class '{course_name}' join code: {code}")
     return klass
 
 
 def _upsert_section(klass, name):
     section = Section.query.filter_by(class_id=klass.id, name=name).first()
     if section is None:
-        section = Section(class_id=klass.id, name=name)
+        section = Section(
+            class_id=klass.id, name=name, assigned_numbers=format_number_spec(range(1, DEMO_GROUP_COUNT + 1))
+        )
         db.session.add(section)
         db.session.commit()
 
-    existing_groups = Group.query.filter_by(section_id=section.id, is_individual=False).count()
+    existing_groups = Group.query.filter_by(class_id=klass.id, is_individual=False).count()
     if existing_groups == 0:
         for number in range(1, DEMO_GROUP_COUNT + 1):
-            db.session.add(Group(section_id=section.id, number=number, name=f"Group {number}"))
+            db.session.add(Group(class_id=klass.id, number=number, name=f"Group {number}"))
         db.session.commit()
-        print(f"  created demo groups 1-{DEMO_GROUP_COUNT} for '{klass.course_name} / {name}'")
+        print(f"  created demo groups 1-{DEMO_GROUP_COUNT} for '{klass.course_name}'")
 
     return section

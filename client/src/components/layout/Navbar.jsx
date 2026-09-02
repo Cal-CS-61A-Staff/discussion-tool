@@ -23,7 +23,7 @@ export default function Navbar() {
           </NavLink>
           {isStaff(user) && (
             <NavLink to="/discussions" className={({ isActive }) => (isActive ? 'active' : '')}>
-              Manage groups
+              Rooms
             </NavLink>
           )}
           {user && (

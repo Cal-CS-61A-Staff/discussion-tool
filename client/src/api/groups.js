@@ -10,6 +10,7 @@ export const giveUpTypist = (groupId, worksheetId) =>
   api.post(`/groups/${groupId}/typist/give-up`, { worksheet_id: worksheetId });
 export const leaveGroup = (groupId, worksheetId) =>
   api.post(`/groups/${groupId}/leave`, { worksheet_id: worksheetId });
+export const updateGroupName = (groupId, name) => api.put(`/groups/${groupId}/name`, { name });
 export const submitAttempt = (groupId, worksheetId, prediction) =>
   api.post(`/groups/${groupId}/attempts`, { worksheet_id: worksheetId, prediction });
 export const submitRating = (groupId, worksheetId, value, questionId) =>

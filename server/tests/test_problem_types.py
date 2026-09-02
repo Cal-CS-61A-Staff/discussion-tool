@@ -7,35 +7,28 @@ import json
 
 from server.extensions import db
 from server.models.group import Group, GroupAssignmentProgress, GroupMembership
-from server.models.klass import Class
 from server.models.question_response import QuestionResponse
 from server.models.rating import Rating
-from server.models.section import Section
 from server.models.user import User
 from server.models.worksheet import Question, Worksheet
 from server.services import advance as advance_service
 from server.services import response_grading
-from server.tests.conftest import login_as
+from server.tests.conftest import add_member, login_as, make_class
 
 
 def _setup():
-    ta = User(display_name="ta", role="ta")
+    ta = User(display_name="ta", role="student")
     db.session.add(ta)
     db.session.flush()
 
-    klass = Class(course_name="C")
-    db.session.add(klass)
-    db.session.flush()
-
-    section = Section(class_id=klass.id, name="S", ta_user_id=ta.id)
-    db.session.add(section)
-    db.session.flush()
+    klass = make_class("C")
+    add_member(ta, klass, "staff")
 
     worksheet = Worksheet(class_id=klass.id, slug="w1", title="W1", is_published=True)
     db.session.add(worksheet)
     db.session.flush()
 
-    group = Group(section_id=section.id, number=1, name="G1")
+    group = Group(class_id=klass.id, number=1, name="G1")
     db.session.add(group)
     student = User(display_name="s1", role="student")
     db.session.add(student)

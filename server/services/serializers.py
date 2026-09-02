@@ -16,6 +16,7 @@ from server.services import advance as advance_service
 from server.services import cooldown as cooldown_service
 from server.services import grader_cooldown as grader_cooldown_service
 from server.models.group_prediction import GroupPrediction
+from server.services import presence
 from server.services import response_grading
 from server.utils import utcnow
 
@@ -310,10 +311,12 @@ def build_group_detail(group, progress, state):
     }
 
 
-def build_dashboard(worksheet_id, groups):
-    """`groups` is the list of Group rows in the class. Groups with no
-    GroupAssignmentProgress row yet for this worksheet (haven't opened this
-    assignment) are reported at question 0, not stuck.
+def build_dashboard(worksheet_id, entries):
+    """`entries` is [(number, Group|None)] — one per group number the TA is
+    watching. A `None` group is a watched number nobody has entered yet
+    (an "empty" tile). A group with no GroupAssignmentProgress for this
+    worksheet is reported at question 0, not stuck. `present` is the
+    display names currently logged into the group (recent /state polls).
     """
     stuck_cutoff = utcnow() - timedelta(seconds=Config.STUCK_THRESHOLD_SECONDS)
     total = total_questions_for_worksheet(worksheet_id)
@@ -332,13 +335,31 @@ def build_dashboard(worksheet_id, groups):
         avg_rating_by_group = {group_id: avg_value for group_id, avg_value in rows}
 
     payload = []
-    for group in groups:
+    for number, group in entries:
+        if group is None:
+            payload.append(
+                {
+                    "group_id": None,
+                    "number": number,
+                    "name": None,
+                    "current_question_index": 0,
+                    "total_questions": total,
+                    "typist_name": None,
+                    "members": [],
+                    "present": [],
+                    "status": "empty",
+                    "average_rating": None,
+                }
+            )
+            continue
+
         progress = GroupAssignmentProgress.query.filter_by(group_id=group.id, worksheet_id=worksheet_id).first()
         current_index = progress.current_question_index if progress else 0
         typist_user_id = progress.typist_user_id if progress else None
         question_started_at = progress.question_started_at if progress else None
 
         members = GroupMembership.query.options(joinedload(GroupMembership.user)).filter_by(group_id=group.id).all()
+        active_ids = {m.user_id for m in presence.active_members(group.id)}
         question = current_question(worksheet_id, current_index)
 
         ratings_by_user = {}
@@ -352,11 +373,14 @@ def build_dashboard(worksheet_id, groups):
             {"user_id": m.user_id, "display_name": m.user.display_name, "rating": ratings_by_user.get(m.user_id)}
             for m in members
         ]
+        present = [m.user.display_name for m in members if m.user_id in active_ids]
 
         typist_name = next((m.user.display_name for m in members if m.user_id == typist_user_id), None)
         completed = question is None
         if completed:
             status = "done"
+        elif not present:
+            status = "empty"
         elif question_started_at is not None and question_started_at < stuck_cutoff:
             status = "stuck"
         else:
@@ -367,11 +391,13 @@ def build_dashboard(worksheet_id, groups):
         payload.append(
             {
                 "group_id": group.id,
+                "number": number,
                 "name": group.name,
                 "current_question_index": current_index,
                 "total_questions": total,
                 "typist_name": typist_name,
                 "members": member_payload,
+                "present": present,
                 "status": status,
                 "average_rating": round(avg_rating, 1) if avg_rating is not None else None,
             }
@@ -387,7 +413,7 @@ def build_group_history(group):
     from the group's perspective, not an authoring surface.
     """
     worksheets = (
-        Worksheet.query.filter_by(class_id=group.section.class_id, is_published=True)
+        Worksheet.query.filter_by(class_id=group.class_id, is_published=True)
         .order_by(Worksheet.created_at.desc())
         .all()
     )
@@ -424,37 +450,6 @@ def build_group_history(group):
             }
         )
     return history
-
-
-def build_section_progress(section):
-    """One row per (non-individual) group in this section: its roster and a
-    general progress meter across every published assignment in its class —
-    how many it's completed, and its average confidence rating across
-    everything it's rated so far. Backs the "Discussions" tab's per-section
-    view (server/blueprints/sections.py:section_progress), which is
-    deliberately just roster + progress, not assignment content — that
-    lives on the class's "Assignments" tab instead.
-    """
-    groups = Group.query.filter_by(section_id=section.id, is_individual=False).order_by(Group.number).all()
-    payload = []
-    for group in groups:
-        members = GroupMembership.query.filter_by(group_id=group.id).all()
-        history = build_group_history(group)
-        total = len(history)
-        completed = sum(1 for h in history if h["status"] == "completed")
-        avg_rating = db.session.query(func.avg(Rating.value)).filter_by(group_id=group.id).scalar()
-        payload.append(
-            {
-                "group_id": group.id,
-                "number": group.number,
-                "name": group.name,
-                "member_names": [m.user.display_name for m in members],
-                "assignments_completed": completed,
-                "total_assignments": total,
-                "average_rating": round(avg_rating, 1) if avg_rating is not None else None,
-            }
-        )
-    return payload
 
 
 def student_worksheet_progress(user, worksheet):

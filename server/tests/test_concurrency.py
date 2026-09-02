@@ -11,9 +11,7 @@ from sqlalchemy.orm import Session
 from server.config import Config
 from server.extensions import db
 from server.models.group import Group, GroupAssignmentProgress, GroupMembership, GroupQuestionState, ScratchCode
-from server.models.klass import Class
 from server.models.rating import Rating
-from server.models.section import Section
 from server.models.test_run import TestRun
 from server.models.user import User
 from server.models.worksheet import Question, Worksheet
@@ -21,6 +19,7 @@ from server.services import advance as advance_service
 from server.services import cooldown as cooldown_service
 from server.services import serializers
 from server.services import typist as typist_service
+from server.tests.conftest import make_class
 from server.utils import utcnow
 
 
@@ -48,13 +47,7 @@ def _add_passing_shared_run(group_id, question_id, user_id):
 
 
 def _make_group_with_members(n=2):
-    klass = Class(course_name="C")
-    db.session.add(klass)
-    db.session.flush()
-
-    section = Section(class_id=klass.id, name="S")
-    db.session.add(section)
-    db.session.flush()
+    klass = make_class("C")
 
     worksheet = Worksheet(class_id=klass.id, slug="w1", title="W1", is_published=True)
     db.session.add(worksheet)
@@ -63,7 +56,7 @@ def _make_group_with_members(n=2):
     question = Question(worksheet_id=worksheet.id, order_index=0, title="Q1", prompt="p", expected_output="42")
     db.session.add(question)
 
-    group = Group(section_id=section.id, number=1, name="G1")
+    group = Group(class_id=klass.id, number=1, name="G1")
     db.session.add(group)
     db.session.flush()
 
@@ -344,61 +337,6 @@ def test_force_advance_route_rejected_for_a_solo_group(app, client):
     assert resp.status_code == 409
     db.session.refresh(progress)
     assert progress.current_question_index == 0
-
-
-def test_remove_group_member_unsticks_a_stalled_advance(app, client):
-    """The scenario this endpoint exists for: one member rated and passed
-    the tests, the other is a "ghost" (crashed, dropped the class, whatever)
-    who will never rate — all_members_rated blocks forever until a TA
-    removes them, per server/services/advance.py.
-    """
-    from server.tests.conftest import login_as
-
-    group, progress, question, users = _make_group_with_members(2)
-    present, ghost = users
-    db.session.add(Rating(group_id=group.id, question_id=question.id, user_id=present.id, value=4))
-    db.session.commit()
-    _add_passing_shared_run(group.id, question.id, present.id)
-
-    # Still stuck: ghost hasn't rated, so all_members_rated needs 2 but has 1.
-    ok, _ = advance_service.try_advance(progress, group.id, question.id)
-    assert ok is False
-
-    ta = User(display_name="TA", role="ta")
-    db.session.add(ta)
-    db.session.commit()
-    group.section.ta_user_id = ta.id
-    db.session.commit()
-    login_as(client, ta)
-
-    resp = client.delete(f"/api/groups/{group.id}/members/{ghost.id}")
-    assert resp.status_code == 200
-    assert GroupMembership.query.filter_by(group_id=group.id, user_id=ghost.id).first() is None
-
-    ok, error = advance_service.try_advance(progress, group.id, question.id)
-    assert ok is True, error
-    assert progress.current_question_index == 1
-
-
-def test_remove_group_member_rejects_removing_the_last_member(app, client):
-    """Removing the last member would leave a 0-member group, which
-    all_members_rated treats as permanently un-advanceable — the opposite
-    of what this endpoint is for.
-    """
-    from server.tests.conftest import login_as
-
-    group, _progress, _question, users = _make_group_with_members(1)
-    ta = User(display_name="TA", role="ta")
-    db.session.add(ta)
-    db.session.commit()
-    group.section.ta_user_id = ta.id
-    db.session.commit()
-    login_as(client, ta)
-
-    resp = client.delete(f"/api/groups/{group.id}/members/{users[0].id}")
-
-    assert resp.status_code == 409
-    assert GroupMembership.query.filter_by(group_id=group.id, user_id=users[0].id).first() is not None
 
 
 def test_all_members_rated_ignores_stale_members(app):
@@ -716,12 +654,7 @@ def _make_completed_assignment():
     build_group_work / get_group_work behavior it also exercised still
     exists (it now backs the shared Assignments page's "View work").
     """
-    klass = Class(course_name="C")
-    db.session.add(klass)
-    db.session.flush()
-    section = Section(class_id=klass.id, name="S")
-    db.session.add(section)
-    db.session.flush()
+    klass = make_class("C")
 
     worksheet = Worksheet(class_id=klass.id, slug="w1", title="Disc 1", is_published=True)
     db.session.add(worksheet)
@@ -736,7 +669,7 @@ def _make_completed_assignment():
     db.session.add_all([student, other_member])
     db.session.flush()
 
-    group = Group(section_id=section.id, number=1, name="G1")
+    group = Group(class_id=klass.id, number=1, name="G1")
     db.session.add(group)
     db.session.flush()
     db.session.add(GroupMembership(group_id=group.id, user_id=student.id))
@@ -762,13 +695,13 @@ def _make_completed_assignment():
         )
     )
     db.session.commit()
-    return klass, section, worksheet, group, student, other_member
+    return klass, worksheet, group, student, other_member
 
 
 def test_get_group_work_shows_submitted_code_and_pass_state(app, client, db):
     from server.tests.conftest import login_as
 
-    _klass, _section, worksheet, group, student, _other = _make_completed_assignment()
+    _klass, worksheet, group, student, _other = _make_completed_assignment()
     outsider = User(display_name="Outsider", role="student")
     db.session.add(outsider)
     db.session.commit()
@@ -801,9 +734,7 @@ def test_group_routes_reject_a_worksheet_from_a_different_class(app, client):
 
     group, _progress, _question, users = _make_group_with_members(1)
 
-    other_klass = Class(course_name="Other")
-    db.session.add(other_klass)
-    db.session.flush()
+    other_klass = make_class("Other", "OTHER1")
     foreign_worksheet = Worksheet(class_id=other_klass.id, slug="foreign", title="Foreign", is_published=True)
     db.session.add(foreign_worksheet)
     db.session.commit()

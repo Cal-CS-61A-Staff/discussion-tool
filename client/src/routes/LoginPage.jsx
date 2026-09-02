@@ -9,7 +9,6 @@ export default function LoginPage() {
   const location = useLocation();
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
-  const [role, setRole] = useState('student');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -37,7 +36,7 @@ export default function LoginPage() {
     setError('');
     setSubmitting(true);
     try {
-      await login(displayName.trim(), role, email.trim());
+      await login(displayName.trim(), 'student', email.trim());
       const dest = location.state?.from || '/';
       navigate(dest, { replace: true });
     } catch (err) {
@@ -108,27 +107,6 @@ export default function LoginPage() {
                 <p style={{ fontSize: 11, color: 'var(--muted)', margin: '4px 0 0' }}>
                   If your email is on a class roster, it links you to your assigned section and TA automatically.
                 </p>
-              </div>
-              <div className="form-group">
-                <label>I am a…</label>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <button
-                    type="button"
-                    className={`btn ${role === 'student' ? 'btn-primary' : ''}`}
-                    style={{ flex: 1 }}
-                    onClick={() => setRole('student')}
-                  >
-                    Student
-                  </button>
-                  <button
-                    type="button"
-                    className={`btn ${role === 'ta' ? 'btn-primary' : ''}`}
-                    style={{ flex: 1 }}
-                    onClick={() => setRole('ta')}
-                  >
-                    TA / Instructor
-                  </button>
-                </div>
               </div>
               <button type="submit" className="btn btn-gold btn-block" disabled={submitting || !displayName.trim()}>
                 {submitting ? 'Signing in…' : 'Sign in'}

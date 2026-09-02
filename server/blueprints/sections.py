@@ -1,171 +1,213 @@
 from flask import Blueprint, jsonify, request
-from sqlalchemy import func
+from sqlalchemy import distinct, func
 
 from server.auth import (
     get_current_user,
+    is_class_staff,
     login_required,
     require_class_access,
+    require_class_membership,
     require_section_access,
-    role_required,
-    ta_owns_class,
-    ta_owns_section,
 )
-from server.config import Config
 from server.extensions import db
 from server.models.group import Group, GroupMembership
-from server.models.klass import Class, ClassEnrollment
+from server.models.klass import Class, ClassMembership
 from server.models.section import Section, SectionCoTeacher
 from server.models.user import User
 from server.models.worksheet import Worksheet
 from server.services import serializers
-from server.services.roster_import import find_user_by_email
+from server.services.number_spec import parse_number_spec
+from server.services.roster_import import _placeholder_display_name, find_user_by_email
+from server.services.watch_list import set_watched_numbers, watched_numbers_for
 
 sections_bp = Blueprint("sections", __name__)
+
+
+def _my_role_in(user, class_id, staff_class_ids, member_roles):
+    if user.role == "admin":
+        return "staff"
+    if class_id in staff_class_ids:
+        return "staff"
+    return member_roles.get(class_id)
 
 
 @sections_bp.get("/classes")
 @login_required
 def list_classes():
-    """A TA only sees classes where they own/co-teach at least one section
-    (or none, until assigned) — admins and students see every class
-    (students pick theirs by browsing).
+    """A student sees only classes they've joined (by code); a staff
+    member sees classes they staff; an admin sees every class. Each class
+    carries `my_role` ('staff' | 'student') so the frontend can render the
+    right surface.
     """
     user = get_current_user()
-    classes = Class.query.all()
-    if user.role == "ta":
-        classes = [c for c in classes if ta_owns_class(user, c)]
-    return jsonify(classes=[_serialize_class(c, user) for c in classes])
+    member_roles = {
+        m.class_id: m.role for m in ClassMembership.query.filter_by(user_id=user.id).all()
+    }
+    staff_class_ids = {cid for cid, role in member_roles.items() if role == "staff"}
+
+    if user.role == "admin":
+        classes = Class.query.all()
+    elif member_roles:
+        classes = Class.query.filter(Class.id.in_(member_roles.keys())).all()
+    else:
+        classes = []
+
+    return jsonify(
+        classes=[
+            _serialize_class(c, _my_role_in(user, c.id, staff_class_ids, member_roles)) for c in classes
+        ]
+    )
+
+
+@sections_bp.post("/classes/join")
+@login_required
+def join_class():
+    """A student enters a class's join code once to gain access. Idempotent
+    — re-entering a code you're already in just returns the class."""
+    user = get_current_user()
+    code = (request.get_json(silent=True) or {}).get("code") or ""
+    code = code.strip().upper()
+    if not code:
+        return jsonify(error="a join code is required"), 400
+
+    klass = Class.query.filter_by(join_code=code).first()
+    if klass is None:
+        return jsonify(error="no class has that join code"), 404
+
+    membership = ClassMembership.query.filter_by(user_id=user.id, class_id=klass.id).first()
+    if membership is None:
+        db.session.add(ClassMembership(user_id=user.id, class_id=klass.id, role="student"))
+        db.session.commit()
+        membership_role = "student"
+    else:
+        membership_role = membership.role
+
+    return jsonify(klass=_serialize_class(klass, "staff" if user.role == "admin" else membership_role))
+
+
+@sections_bp.get("/classes/<int:class_id>/staff")
+@login_required
+def list_class_staff(class_id):
+    """The class's staff roster — any staff member of the class, or an admin."""
+    klass = Class.query.get_or_404(class_id)
+    error = require_class_access(get_current_user(), klass)
+    if error:
+        return error
+    rows = ClassMembership.query.filter_by(class_id=class_id, role="staff").all()
+    return jsonify(staff=[_serialize_membership(m) for m in rows])
+
+
+@sections_bp.post("/classes/<int:class_id>/staff")
+@login_required
+def add_class_staff(class_id):
+    """Grant staff access to the class by email (found or created), the
+    same identity key roster import and login use. Any existing staff
+    member of the class, or an admin."""
+    klass = Class.query.get_or_404(class_id)
+    error = require_class_access(get_current_user(), klass)
+    if error:
+        return error
+
+    email = ((request.get_json(silent=True) or {}).get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        return jsonify(error="a valid email is required"), 400
+
+    target = find_user_by_email(email)
+    if target is None:
+        target = User(display_name=_placeholder_display_name(email), role="student", email=email)
+        db.session.add(target)
+        db.session.flush()
+
+    membership = ClassMembership.query.filter_by(user_id=target.id, class_id=class_id).first()
+    if membership is None:
+        db.session.add(ClassMembership(user_id=target.id, class_id=class_id, role="staff"))
+    else:
+        membership.role = "staff"
+    db.session.commit()
+
+    return jsonify(staff=[_serialize_membership(m) for m in ClassMembership.query.filter_by(class_id=class_id, role="staff").all()])
+
+
+@sections_bp.delete("/classes/<int:class_id>/staff/<int:user_id>")
+@login_required
+def remove_class_staff(class_id, user_id):
+    """Revoke a person's membership of the class entirely (they can
+    re-join as a student with the code). Any staff member, or an admin."""
+    klass = Class.query.get_or_404(class_id)
+    error = require_class_access(get_current_user(), klass)
+    if error:
+        return error
+    ClassMembership.query.filter_by(class_id=class_id, user_id=user_id).delete()
+    # Also drop them from any room they ran, so a stale name doesn't linger.
+    for section in Section.query.filter_by(class_id=class_id).all():
+        if section.ta_user_id == user_id:
+            section.ta_user_id = None
+    SectionCoTeacher.query.filter(
+        SectionCoTeacher.user_id == user_id,
+        SectionCoTeacher.section_id.in_([s.id for s in Section.query.filter_by(class_id=class_id).all()]),
+    ).delete(synchronize_session=False)
+    db.session.commit()
+    return jsonify(ok=True)
 
 
 @sections_bp.get("/sections")
 @login_required
 def list_sections():
-    """A TA only sees sections they're the primary TA of or a co-teacher on
-    (or none, until an admin assigns them one, or an existing TA/co-teacher
-    grants them co-authority) — admins and students see every section
-    (students pick theirs by browsing; there's no per-student ownership).
-    """
+    """Rooms for classes the caller staffs (an admin sees every room).
+    Students have no use for this — a room is staff-only config now."""
     user = get_current_user()
-    sections = Section.query.all()
-    if user.role == "ta":
-        co_taught_ids = {
-            c.section_id for c in SectionCoTeacher.query.filter_by(user_id=user.id).all()
-        }
-        sections = [s for s in sections if s.ta_user_id == user.id or s.id in co_taught_ids]
+    if user.role == "admin":
+        sections = Section.query.all()
+    else:
+        staff_class_ids = [
+            m.class_id for m in ClassMembership.query.filter_by(user_id=user.id, role="staff").all()
+        ]
+        sections = Section.query.filter(Section.class_id.in_(staff_class_ids)).all() if staff_class_ids else []
     return jsonify(sections=[_serialize_section(s, user) for s in sections])
-
-
-@sections_bp.get("/classes/<int:class_id>/students")
-@role_required("ta")
-def list_class_students(class_id):
-    """The course roster (ClassEnrollment) for any TA/co-teacher on the
-    class, or an admin — email plus the display name if an account exists."""
-    klass = Class.query.get_or_404(class_id)
-    error = require_class_access(get_current_user(), klass)
-    if error:
-        return error
-
-    enrollments = (
-        ClassEnrollment.query.filter_by(class_id=class_id).order_by(ClassEnrollment.student_email).all()
-    )
-    emails = [e.student_email for e in enrollments]
-    names = (
-        {u.email.lower(): u.display_name for u in User.query.filter(func.lower(User.email).in_(emails)).all()}
-        if emails
-        else {}
-    )
-    students = [{"email": e.student_email, "name": names.get(e.student_email)} for e in enrollments]
-    return jsonify(students=students)
-
-
-@sections_bp.post("/classes/<int:class_id>/students")
-@role_required("ta")
-def add_class_student(class_id):
-    """Add one student to the course roster by email (+ optional name).
-    Any TA/co-teacher on the class, or an admin."""
-    klass = Class.query.get_or_404(class_id)
-    error = require_class_access(get_current_user(), klass)
-    if error:
-        return error
-
-    data = request.get_json(silent=True) or {}
-    email = (data.get("email") or "").strip().lower()
-    name = (data.get("name") or "").strip()
-    if not email or "@" not in email:
-        return jsonify(error="a valid email is required"), 400
-
-    if ClassEnrollment.query.filter_by(class_id=class_id, student_email=email).first() is None:
-        db.session.add(ClassEnrollment(class_id=class_id, student_email=email))
-    if name and find_user_by_email(email) is None:
-        db.session.add(User(display_name=name, role="student", email=email))
-    db.session.commit()
-    return jsonify(ok=True)
-
-
-@sections_bp.delete("/classes/<int:class_id>/students")
-@role_required("ta")
-def remove_class_student(class_id):
-    """Remove a student from the course roster — does not delete their
-    account or any group work, just their roster entry."""
-    klass = Class.query.get_or_404(class_id)
-    error = require_class_access(get_current_user(), klass)
-    if error:
-        return error
-
-    data = request.get_json(silent=True) or {}
-    email = (data.get("email") or "").strip().lower()
-    ClassEnrollment.query.filter_by(class_id=class_id, student_email=email).delete()
-    db.session.commit()
-    return jsonify(ok=True)
 
 
 @sections_bp.get("/classes/<int:class_id>/worksheets")
 @login_required
 def class_worksheets(class_id):
-    """Same visibility rule as section_worksheets below, but addressed
-    directly by class id — used by the "Assignments" tab, which lists a
-    class's assignments without going through any one of its sections.
+    """Assignments in a class. A student must be a member of the class and
+    only sees published ones; a staff member (or admin) sees drafts too.
     """
     klass = Class.query.get_or_404(class_id)
     user = get_current_user()
+    staff = is_class_staff(user, klass)
+    if not staff:
+        error = require_class_membership(user, klass)
+        if error:
+            return error
     query = Worksheet.query.filter_by(class_id=klass.id)
-    if not ta_owns_class(user, klass):
+    if not staff:
         query = query.filter_by(is_published=True)
     worksheets = query.order_by(Worksheet.created_at).all()
     return jsonify(worksheets=[_serialize_worksheet(w, user) for w in worksheets])
 
 
-@sections_bp.get("/sections/<int:section_id>/worksheets")
+@sections_bp.get("/classes/<int:class_id>/watched-numbers")
 @login_required
-def section_worksheets(section_id):
-    """Assignments belong to this section's *class* now (shared across
-    every section in it) — students only ever see published ones, drafts a
-    TA is still building stay invisible until explicitly released (see
-    Worksheet.is_published). Any TA who owns/co-teaches a section of this
-    class (or an admin) sees everything, draft or not; a TA unrelated to
-    this class is treated like a student — published only.
-    """
-    section = Section.query.get_or_404(section_id)
-    user = get_current_user()
-    query = Worksheet.query.filter_by(class_id=section.class_id)
-    if not ta_owns_class(user, section.klass):
-        query = query.filter_by(is_published=True)
-    worksheets = query.order_by(Worksheet.created_at).all()
-    return jsonify(worksheets=[_serialize_worksheet(w) for w in worksheets])
-
-
-@sections_bp.get("/sections/<int:section_id>/progress")
-@role_required("ta")
-def section_progress(section_id):
-    """This section's own TA (or an admin) only — the "Discussions" tab's
-    "View class" page: each group's roster and its progress across the
-    class's assignments, deliberately with no assignment content on it.
-    """
-    section = Section.query.get_or_404(section_id)
-    error = require_section_access(get_current_user(), section)
+def get_watched_numbers(class_id):
+    """The caller's live-dashboard watch list for this class (staff/admin);
+    seeded from the rooms they run on first access."""
+    klass = Class.query.get_or_404(class_id)
+    error = require_class_access(get_current_user(), klass)
     if error:
         return error
-    return jsonify(groups=serializers.build_section_progress(section))
+    return jsonify(numbers=watched_numbers_for(get_current_user(), klass))
+
+
+@sections_bp.put("/classes/<int:class_id>/watched-numbers")
+@login_required
+def put_watched_numbers(class_id):
+    klass = Class.query.get_or_404(class_id)
+    error = require_class_access(get_current_user(), klass)
+    if error:
+        return error
+    raw = (request.get_json(silent=True) or {}).get("numbers") or []
+    numbers = [int(n) for n in raw if str(n).lstrip("-").isdigit() and 1 <= int(n) <= 999]
+    return jsonify(numbers=set_watched_numbers(get_current_user(), klass, numbers))
 
 
 @sections_bp.get("/me/groups")
@@ -176,112 +218,68 @@ def my_groups():
     return jsonify(groups=[_serialize_group_summary(m.group) for m in memberships])
 
 
-@sections_bp.get("/sections/<int:section_id>/groups")
-@role_required("ta")
-def section_groups(section_id):
-    """This section's own TA (or an admin) only — students never see the
-    roster of who's in which group, only their own (via /me/groups) or the
-    one they successfully join by number below.
+@sections_bp.post("/classes/<int:class_id>/groups/join")
+@login_required
+def join_group_by_number(class_id):
+    """Pensive-style join: any class member types a group number; everyone
+    on the same number in this class is in the same group. Optionally
+    names the group. Find-or-create, idempotent on re-join.
     """
-    section = Section.query.get_or_404(section_id)
-    error = require_section_access(get_current_user(), section)
+    user = get_current_user()
+    klass = Class.query.get_or_404(class_id)
+    error = require_class_membership(user, klass)
     if error:
         return error
-    groups = Group.query.filter_by(section_id=section.id, is_individual=False).order_by(Group.number).all()
-    return jsonify(groups=[_serialize_group_summary(g) for g in groups])
-
-
-@sections_bp.get("/sections/<int:section_id>/groups/joinable")
-@login_required
-def joinable_groups(section_id):
-    """The list a student picks from on the join page — every non-individual
-    group in the section with how full it is. Any signed-in user, but the
-    same course-roster gate as joining applies."""
-    section = Section.query.get_or_404(section_id)
-    user = get_current_user()
-    if user.role == "student":
-        error = _enrollment_blocks_join(user, section)
-        if error:
-            return jsonify(error=error), 403
-    groups = Group.query.filter_by(section_id=section.id, is_individual=False).order_by(Group.number).all()
-    payload = []
-    for g in groups:
-        summary = _serialize_group_summary(g)
-        summary["capacity"] = Config.MAX_GROUP_SIZE
-        summary["is_full"] = summary["member_count"] >= Config.MAX_GROUP_SIZE
-        payload.append(summary)
-    return jsonify(groups=payload)
-
-
-@sections_bp.post("/sections/<int:section_id>/groups/join")
-@login_required
-def join_group_by_number(section_id):
-    """Student picks a group on the join page and its number is sent here.
-    Idempotent if already a member."""
-    user = get_current_user()
-    if user.role != "student":
-        return jsonify(error="only students join groups"), 403
-
-    section = Section.query.get_or_404(section_id)
-    error = _enrollment_blocks_join(user, section)
-    if error:
-        return jsonify(error=error), 403
 
     data = request.get_json(silent=True) or {}
     try:
         number = int(data.get("number"))
     except (TypeError, ValueError):
         return jsonify(error="a group number is required"), 400
+    if number < 1 or number > 999:
+        return jsonify(error="group number must be between 1 and 999"), 400
+    name = (data.get("name") or "").strip()
 
-    group = Group.query.filter_by(section_id=section_id, number=number, is_individual=False).first()
+    group = Group.query.filter_by(class_id=class_id, number=number, is_individual=False).first()
     if group is None:
-        return jsonify(error=f"no group #{number} in this class"), 404
+        group = Group(class_id=class_id, number=number, name=name or f"Group {number}", is_individual=False)
+        db.session.add(group)
+        db.session.flush()
+    elif name:
+        group.name = name
 
-    member_count = GroupMembership.query.filter_by(group_id=group.id).count()
-    already_in = GroupMembership.query.filter_by(group_id=group.id, user_id=user.id).first()
-    if member_count >= Config.MAX_GROUP_SIZE and already_in is None:
-        return jsonify(error="group is full"), 409
-
-    if already_in is None:
+    if GroupMembership.query.filter_by(group_id=group.id, user_id=user.id).first() is None:
         db.session.add(GroupMembership(group_id=group.id, user_id=user.id))
-        db.session.commit()
+    db.session.commit()
 
     return jsonify(group=_serialize_group_summary(group))
 
 
-@sections_bp.post("/sections/<int:section_id>/work-individually")
+@sections_bp.post("/classes/<int:class_id>/work-individually")
 @login_required
-def work_individually(section_id):
+def work_individually(class_id):
     """Creates-or-reuses the caller's personal (is_individual) group for
-    this class — the "work individually" option available alongside
-    joining a group on every assignment. Reuses all the same group
-    machinery for a group of one rather than a parallel solo code path.
+    this class — the "work individually" option alongside entering a
+    number. Reuses all the same group machinery for a group of one.
 
-    Also backs "View as student" on the Assignments page: a TA/admin with
-    access to this section gets the exact same solo group/live worksheet
-    flow a student would, to sanity-check an assignment (doctests,
-    prediction quiz, wording) end to end before publishing it. Their
-    resulting group is excluded from grade rollups and the TA dashboard
-    (see worksheet_grades) so it never gets mistaken for a real student's
-    attempt.
+    Also backs "View as student" for staff: a class member (staff
+    included) gets the same solo flow a student would. Excluded from grade
+    rollups / dashboards so it never looks like a real attempt.
     """
     user = get_current_user()
-    section = Section.query.get_or_404(section_id)
-    if user.role == "student":
-        error = _enrollment_blocks_join(user, section)
-        if error:
-            return jsonify(error=error), 403
-    elif not ta_owns_section(user, section):
-        return jsonify(error="you don't have access to this class"), 403
+    klass = Class.query.get_or_404(class_id)
+    error = require_class_membership(user, klass)
+    if error:
+        return error
 
     group = (
-        Group.query.filter_by(section_id=section_id, is_individual=True)
+        Group.query.filter_by(class_id=class_id, is_individual=True)
         .join(GroupMembership, GroupMembership.group_id == Group.id)
         .filter(GroupMembership.user_id == user.id)
         .first()
     )
     if group is None:
-        group = Group(section_id=section_id, name=f"{user.display_name} (individual)", is_individual=True)
+        group = Group(class_id=class_id, name=f"{user.display_name} (individual)", is_individual=True)
         db.session.add(group)
         db.session.flush()
         db.session.add(GroupMembership(group_id=group.id, user_id=user.id))
@@ -290,74 +288,47 @@ def work_individually(section_id):
     return jsonify(group=_serialize_group_summary(group))
 
 
-def _enrollment_blocks_join(user, section):
-    """None if `user` may join a group under `section` (course-level gate),
-    else an error message to surface as a banner. Only enforced when both
-    (a) the user gave an email at login (server/blueprints/auth.py) and
-    (b) this section's CLASS has a roster (ClassEnrollment) — a class with
-    no roster stays open to anyone, and a user with no email is never gated.
-    """
-    if not user.email:
-        return None
-    class_id = section.class_id
-    if not db.session.query(ClassEnrollment.id).filter_by(class_id=class_id).first():
-        return None
-    is_enrolled = (
-        ClassEnrollment.query.filter_by(class_id=class_id, student_email=user.email.strip().lower()).first()
-        is not None
-    )
-    if is_enrolled:
-        return None
-    return "you're not on the roster for this class — ask your TA to add you"
+def _serialize_membership(membership):
+    return {
+        "user_id": membership.user.id,
+        "display_name": membership.user.display_name,
+        "email": membership.user.email,
+        "role": membership.role,
+    }
 
 
-def _serialize_class(klass, user):
-    """assignment_count/section_count mirror _serialize_section's
-    worksheet_count logic: a student (or an unrelated TA) only counts
-    released assignments, while a TA/co-teacher of any section here (or an
-    admin) sees the true total, since they're trusted to manage drafts.
-    """
+def _serialize_class(klass, my_role):
     query = Worksheet.query.filter_by(class_id=klass.id)
-    if not ta_owns_class(user, klass):
+    if my_role != "staff":
         query = query.filter_by(is_published=True)
-    # Counts real participation (anyone who's joined a group under any
-    # section of this class), not imported-roster enrollment — that's
-    # opt-in per section and often absent entirely for a demo/open class.
     student_count = (
-        db.session.query(func.count(func.distinct(GroupMembership.user_id)))
+        db.session.query(func.count(distinct(GroupMembership.user_id)))
         .join(Group, Group.id == GroupMembership.group_id)
-        .join(Section, Section.id == Group.section_id)
-        .filter(Section.class_id == klass.id)
+        .filter(Group.class_id == klass.id)
         .scalar()
     ) or 0
-    return {
+    payload = {
         "id": klass.id,
         "course_name": klass.course_name,
+        "my_role": my_role,
         "assignment_count": query.count(),
         "section_count": Section.query.filter_by(class_id=klass.id).count(),
         "student_count": student_count,
         "is_archived": klass.is_archived,
     }
+    if my_role == "staff":
+        payload["join_code"] = klass.join_code
+    return payload
 
 
 def _serialize_section(section, user):
-    """worksheet_count reflects what `user` can actually see — a student
-    (or a TA unrelated to this section's class) shouldn't count assignments
-    that haven't been released yet, but a TA/co-teacher of this class (or
-    an admin), who can see and needs to manage drafts, sees the true total.
-    Assignments belong to the class now, not the section directly (see
-    server/models/klass.py) — course_name is likewise the class's.
-    """
-    query = Worksheet.query.filter_by(class_id=section.class_id)
-    if not ta_owns_class(user, section.klass):
-        query = query.filter_by(is_published=True)
     co_teachers = SectionCoTeacher.query.filter_by(section_id=section.id).all()
     return {
         "id": section.id,
         "class_id": section.class_id,
         "course_name": section.klass.course_name,
         "name": section.name,
-        "worksheet_count": query.count(),
+        "assigned_numbers": section.assigned_numbers or "",
         "ta_id": section.ta_user_id,
         "ta_name": section.ta.display_name if section.ta else None,
         "ta_email": section.ta.email if section.ta else None,
@@ -368,12 +339,9 @@ def _serialize_section(section, user):
 
 
 def _serialize_worksheet(worksheet, user=None):
-    """`user` is only passed by class_worksheets (the shared Assignments
-    page) — section_worksheets doesn't need a viewer's own rating, so it
-    keeps calling this without one and my_rating/my_group_id stay absent.
-    """
     payload = {
         "id": worksheet.id,
+        "class_id": worksheet.class_id,
         "slug": worksheet.slug,
         "title": worksheet.title,
         "description": worksheet.description,
@@ -392,7 +360,7 @@ def _serialize_group_summary(group):
         "id": group.id,
         "number": group.number,
         "name": group.name,
-        "section_id": group.section_id,
+        "class_id": group.class_id,
         "is_individual": group.is_individual,
         "member_count": len(members),
         "member_names": [m.user.display_name for m in members],

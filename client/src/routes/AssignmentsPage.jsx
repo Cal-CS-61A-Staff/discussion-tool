@@ -4,22 +4,19 @@ import ClassFilterSelect from '../components/shared/ClassFilterSelect.jsx';
 import * as adminApi from '../api/admin.js';
 import * as sectionsApi from '../api/sections.js';
 import { useAuth } from '../context/AuthContext.jsx';
-import { isStaff } from '../utils/roles.js';
+import { classIsStaff } from '../utils/roles.js';
 
 export default function AssignmentsPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const filterClassId = searchParams.get('classId');
-  const staff = isStaff(user);
 
   const handleClassFilterChange = (classId) => {
     setSearchParams(classId ? { classId: String(classId) } : {});
   };
 
   const [classes, setClasses] = useState([]);
-  const [sections, setSections] = useState([]);
-  const [myGroups, setMyGroups] = useState([]);
   const [worksheetsByClass, setWorksheetsByClass] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -33,19 +30,18 @@ export default function AssignmentsPage() {
 
   const load = () => {
     setLoading(true);
-    let fetchedClasses = [];
-    Promise.all([sectionsApi.listClasses(), sectionsApi.listSections(), sectionsApi.myGroups()])
-      .then(([classesRes, sectionsRes, myGroupsRes]) => {
-        fetchedClasses = classesRes.classes;
-        setClasses(classesRes.classes);
-        setSections(sectionsRes.sections);
-        setMyGroups(myGroupsRes.groups);
-        return Promise.all(fetchedClasses.map((c) => sectionsApi.classWorksheets(c.id)));
+    let fetched = [];
+    sectionsApi
+      .listClasses()
+      .then((res) => {
+        fetched = res.classes;
+        setClasses(res.classes);
+        return Promise.all(fetched.map((c) => sectionsApi.classWorksheets(c.id)));
       })
       .then((results) => {
         const byClass = {};
         results.forEach((res, i) => {
-          byClass[fetchedClasses[i].id] = res.worksheets;
+          byClass[fetched[i].id] = res.worksheets;
         });
         setWorksheetsByClass(byClass);
       })
@@ -89,7 +85,6 @@ export default function AssignmentsPage() {
   };
 
   const handleTogglePublish = async (w) => {
-    const verb = w.is_published ? 'unpublish' : 'publish';
     const confirmMessage = w.is_published
       ? `Unpublish "${w.title}"? Students will no longer be able to see or access it.`
       : `Publish "${w.title}"? Students will immediately be able to see and start it.`;
@@ -97,7 +92,7 @@ export default function AssignmentsPage() {
     setBusyWorksheetId(w.id);
     setError('');
     try {
-      if (verb === 'unpublish') await adminApi.unpublishWorksheet(w.id);
+      if (w.is_published) await adminApi.unpublishWorksheet(w.id);
       else await adminApi.publishWorksheet(w.id);
       load();
     } catch (err) {
@@ -109,25 +104,14 @@ export default function AssignmentsPage() {
 
   const viewWork = (w) => navigate(`/groups/${w.my_group_id}/worksheets/${w.id}/work`);
 
-  // Drops a TA/admin into the exact same live worksheet flow a student
-  // gets — their own solo "individual" group (server/blueprints/sections.py:
-  // work_individually) — to sanity-check an assignment (doctests,
-  // prediction quiz, wording) end to end before publishing it. Which
-  // section it's filed under doesn't matter content-wise (a worksheet is
-  // shared across the whole class); listSections() already only returns
-  // sections this staff member has access to, so the first one is always
-  // safe to use.
+  // Drops a staff member into the same solo worksheet flow a student gets,
+  // to sanity-check an assignment before publishing it.
   const handleViewAsStudent = async (classId, worksheetId) => {
-    const classSections = sections.filter((s) => s.class_id === classId);
-    if (classSections.length === 0) {
-      setError('Add a section to this class before previewing an assignment.');
-      return;
-    }
     setViewingAsStudentId(worksheetId);
     setError('');
     try {
-      const res = await sectionsApi.workIndividually(classSections[0].id);
-      navigate(`/classes/${classSections[0].id}/assignments/${worksheetId}/groups/${res.group.id}`);
+      const res = await sectionsApi.workIndividually(classId);
+      navigate(`/classes/${classId}/assignments/${worksheetId}/groups/${res.group.id}`);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -135,28 +119,10 @@ export default function AssignmentsPage() {
     }
   };
 
-  const sectionIdToClassId = Object.fromEntries(sections.map((s) => [s.id, s.class_id]));
-
-  // Assignments belong to a class, not a section. This always lands on
-  // AssignmentPage first, never straight into the live worksheet: joining
-  // a group is a deliberate action (leaving the page gives up your
-  // pen/active slot — see StudentWorksheetPage), not something to silently
-  // re-enter on a stray click. AssignmentPage now hosts the "pick your TA
-  // then a group" join panel itself, so we only need *a* section in the
-  // URL — the student's own if they have a group, else any section of the
-  // class as the starting point for the picker.
+  // Assignments belong to a class. This lands on AssignmentPage first (where
+  // the student enters a group number) — never straight into a live group.
   const goToAssignment = (classId, worksheetId) => {
-    const myGroup = myGroups.find((g) => sectionIdToClassId[g.section_id] === classId);
-    if (myGroup) {
-      navigate(`/classes/${myGroup.section_id}/assignments/${worksheetId}`);
-      return;
-    }
-    const classSections = sections.filter((s) => s.class_id === classId);
-    if (classSections.length === 0) {
-      setError('No sections in this class yet — ask your TA.');
-      return;
-    }
-    navigate(`/classes/${classSections[0].id}/assignments/${worksheetId}`);
+    navigate(`/classes/${classId}/assignments/${worksheetId}`);
   };
 
   if (loading) return <div className="page-loading">Loading…</div>;
@@ -168,11 +134,7 @@ export default function AssignmentsPage() {
       <div className="page-header-row">
         <div>
           <h1>Assignments</h1>
-          <p>
-            {staff
-              ? 'Shared across every section of a class — any TA on that class\'s staff can edit them.'
-              : 'Every discussion in your classes, with your own rating once you\'ve started one.'}
-          </p>
+          <p>Shared across a whole class — any staff member of that class can edit them.</p>
         </div>
         {classes.length > 1 && (
           <div className="form-group" style={{ marginBottom: 0 }}>
@@ -193,14 +155,13 @@ export default function AssignmentsPage() {
 
       {visibleClasses.length === 0 && (
         <p style={{ color: 'var(--muted)' }}>
-          {staff
-            ? "You don't own or co-teach any sections yet — assignments live under a class once you do."
-            : 'Nothing here yet.'}
+          Nothing here yet — enter a class join code on the home page.
         </p>
       )}
 
       {visibleClasses.map((c) => {
         const worksheets = worksheetsByClass[c.id] || [];
+        const staff = classIsStaff(c, user);
         const showNewForm = showNewFormFor === c.id;
         return (
           <div key={c.id} style={{ marginBottom: 32 }}>
@@ -309,11 +270,9 @@ export default function AssignmentsPage() {
                 {worksheets.length === 0 && (
                   <p style={{ color: 'var(--muted)', fontSize: 13 }}>Nothing released yet.</p>
                 )}
-                {/* Not-started assignments first — those are the ones actually worth surfacing. */}
                 {[...worksheets]
                   .sort((a, b) => Number(Boolean(b.my_group_id)) - Number(Boolean(a.my_group_id)))
-                  .map((w) => {
-                  return (
+                  .map((w) => (
                     <div className="panel panel-clickable" key={w.id} onClick={() => goToAssignment(c.id, w.id)}>
                       <div
                         className="panel-heading"
@@ -344,8 +303,7 @@ export default function AssignmentsPage() {
                         </div>
                       </div>
                     </div>
-                  );
-                })}
+                  ))}
               </>
             )}
 

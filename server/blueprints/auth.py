@@ -3,7 +3,7 @@ from flask import Blueprint, current_app, jsonify, redirect, request, session, u
 from server.auth import get_current_user, login_required
 from server.extensions import db, limiter, oauth
 from server.models.user import User
-from server.services.roster_import import find_ta_by_name, find_user_by_email
+from server.services.roster_import import find_user_by_email
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -84,20 +84,17 @@ def login():
 
     data = request.get_json(silent=True) or {}
     display_name = (data.get("display_name") or "").strip()
-    role = data.get("role")
     email = (data.get("email") or "").strip()
 
     if not display_name:
         return jsonify(error="display_name is required"), 400
-    if role not in ("student", "ta"):
-        return jsonify(error="role must be 'student' or 'ta'"), 400
 
+    # Role is per-class now (ClassMembership) — every stub login is a plain
+    # 'student' account; staff standing is granted separately. `email`, when
+    # given, still resolves a pre-existing (roster-imported / admin) account.
     user = find_user_by_email(email) if email else None
-    if user is None and role == "ta":
-        user = find_ta_by_name(display_name)
-
     if user is None:
-        user = User(display_name=display_name, role=role, email=email or None)
+        user = User(display_name=display_name, role="student", email=email or None)
         db.session.add(user)
     else:
         user.display_name = display_name
@@ -156,4 +153,14 @@ def logout():
 
 
 def _serialize_user(user):
-    return {"id": user.id, "display_name": user.display_name, "role": user.role}
+    from server.models.klass import ClassMembership
+
+    staffs_any = user.role == "admin" or (
+        ClassMembership.query.filter_by(user_id=user.id, role="staff").first() is not None
+    )
+    return {
+        "id": user.id,
+        "display_name": user.display_name,
+        "role": user.role,
+        "staffs_any_class": staffs_any,
+    }

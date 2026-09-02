@@ -3,6 +3,11 @@ export default function CourseCard({ course, onClick }) {
     <div className="panel panel-clickable course-card" onClick={onClick}>
       <div className="course-card-heading">
         <h4>{course.course_name}</h4>
+        {course.my_role === 'staff' && (
+          <span className="badge badge-default" style={{ marginLeft: 8 }}>
+            staff
+          </span>
+        )}
       </div>
       <div className="course-card-footer">
         {course.assignment_count} assignment{course.assignment_count === 1 ? '' : 's'}

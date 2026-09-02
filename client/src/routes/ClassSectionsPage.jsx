@@ -1,11 +1,9 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import ClassStudentsPanel from '../components/ta/ClassStudentsPanel.jsx';
-import SectionGroupsPanel from '../components/ta/SectionGroupsPanel.jsx';
 import * as adminApi from '../api/admin.js';
 import * as sectionsApi from '../api/sections.js';
 import { useAuth } from '../context/AuthContext.jsx';
-import { isStaff } from '../utils/roles.js';
+import { classIsStaff } from '../utils/roles.js';
 
 export default function ClassSectionsPage() {
   const { classId } = useParams();
@@ -13,16 +11,16 @@ export default function ClassSectionsPage() {
   const navigate = useNavigate();
   const isAdmin = user.role === 'admin';
 
-  const [className, setClassName] = useState('');
+  const [klass, setKlass] = useState(null);
   const [sections, setSections] = useState([]);
-  const [tas, setTas] = useState([]);
+  const [staff, setStaff] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   const [editingId, setEditingId] = useState(null);
   const [editName, setEditName] = useState('');
+  const [editNumbers, setEditNumbers] = useState('');
   const [expandedId, setExpandedId] = useState(null);
-  const [groupsExpandedId, setGroupsExpandedId] = useState(null);
   const [coTeacherInput, setCoTeacherInput] = useState('');
   const [busySectionId, setBusySectionId] = useState(null);
 
@@ -30,17 +28,16 @@ export default function ClassSectionsPage() {
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
 
+  const [newStaffEmail, setNewStaffEmail] = useState('');
+  const [addingStaff, setAddingStaff] = useState(false);
+
   const load = () => {
     setLoading(true);
-    const calls = isAdmin
-      ? [sectionsApi.listClasses(), sectionsApi.listSections(), adminApi.listTas()]
-      : [sectionsApi.listClasses(), sectionsApi.listSections()];
-    Promise.all(calls)
-      .then(([classesRes, sectionsRes, tasRes]) => {
-        const klass = classesRes.classes.find((c) => String(c.id) === String(classId));
-        setClassName(klass ? klass.course_name : 'Class');
+    Promise.all([sectionsApi.listClasses(), sectionsApi.listSections(), sectionsApi.listClassStaff(classId)])
+      .then(([classesRes, sectionsRes, staffRes]) => {
+        setKlass(classesRes.classes.find((c) => String(c.id) === String(classId)) || null);
         setSections(sectionsRes.sections.filter((s) => String(s.class_id) === String(classId)));
-        if (tasRes) setTas(tasRes.tas);
+        setStaff(staffRes.staff);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
@@ -54,13 +51,14 @@ export default function ClassSectionsPage() {
   const startEdit = (section) => {
     setEditingId(section.id);
     setEditName(section.name);
+    setEditNumbers(section.assigned_numbers || '');
   };
 
   const saveEdit = async (sectionId) => {
     setBusySectionId(sectionId);
     setError('');
     try {
-      await sectionsApi.updateSectionDetails(sectionId, editName.trim());
+      await sectionsApi.updateSectionDetails(sectionId, editName.trim(), editNumbers.trim());
       setEditingId(null);
       load();
     } catch (err) {
@@ -88,10 +86,6 @@ export default function ClassSectionsPage() {
     setCoTeacherInput('');
   };
 
-  const toggleGroupsExpanded = (section) => {
-    setGroupsExpandedId(groupsExpandedId === section.id ? null : section.id);
-  };
-
   const handleAddCoTeacher = async (section) => {
     const email = coTeacherInput.trim();
     if (!email) return;
@@ -109,9 +103,7 @@ export default function ClassSectionsPage() {
   };
 
   const handleRemoveCoTeacher = async (section, coTeacher) => {
-    if (!window.confirm(`Remove ${coTeacher.display_name} as a co-teacher of "${section.name}"?`)) {
-      return;
-    }
+    if (!window.confirm(`Remove ${coTeacher.display_name} from "${section.name}"?`)) return;
     setBusySectionId(section.id);
     setError('');
     try {
@@ -125,11 +117,7 @@ export default function ClassSectionsPage() {
   };
 
   const handleDeleteSection = async (section) => {
-    if (
-      !window.confirm(`Delete "${section.name}"? This permanently removes every group and history in this section.`)
-    ) {
-      return;
-    }
+    if (!window.confirm(`Delete room "${section.name}"? Groups and history are unaffected.`)) return;
     setBusySectionId(section.id);
     setError('');
     try {
@@ -158,15 +146,42 @@ export default function ClassSectionsPage() {
     }
   };
 
-  if (!isStaff(user)) {
+  const handleAddStaff = async (e) => {
+    e.preventDefault();
+    if (!newStaffEmail.trim()) return;
+    setAddingStaff(true);
+    setError('');
+    try {
+      await sectionsApi.addClassStaff(classId, newStaffEmail.trim());
+      setNewStaffEmail('');
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setAddingStaff(false);
+    }
+  };
+
+  const handleRemoveStaff = async (member) => {
+    if (!window.confirm(`Remove ${member.display_name} from this class's staff?`)) return;
+    setError('');
+    try {
+      await sectionsApi.removeClassStaff(classId, member.user_id);
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  if (loading) return <div className="page-loading">Loading…</div>;
+
+  if (klass && !classIsStaff(klass, user)) {
     return (
       <div className="panel">
-        <div className="panel-body">TA or admin access required.</div>
+        <div className="panel-body">You're not staff of this class.</div>
       </div>
     );
   }
-
-  if (loading) return <div className="page-loading">Loading…</div>;
 
   return (
     <div>
@@ -183,23 +198,75 @@ export default function ClassSectionsPage() {
       </div>
       <div className="page-header-row">
         <div>
-          <h1>{className}</h1>
-          <p>Sections {isAdmin ? 'in this class' : 'you teach or co-teach in this class'}.</p>
+          <h1>{klass ? klass.course_name : 'Class'}</h1>
+          {klass?.join_code && (
+            <p>
+              Join code: <code className="code">{klass.join_code}</code> — share this with students so they can add
+              the class.
+            </p>
+          )}
         </div>
       </div>
 
       {error && <div className="alert alert-danger">{error}</div>}
 
-      <ClassStudentsPanel classId={Number(classId)} />
+      <div className="panel">
+        <div className="panel-heading">
+          <h4>Class staff</h4>
+        </div>
+        <div className="panel-body">
+          {staff.length > 0 && (
+            <ul style={{ margin: '0 0 12px', paddingLeft: 18, fontSize: 13 }}>
+              {staff.map((m) => (
+                <li key={m.user_id} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span>
+                    {m.display_name}
+                    {m.email ? ` — ${m.email}` : ''}
+                    {m.user_id === user.id && ' (you)'}
+                  </span>
+                  <a
+                    href="/"
+                    className="admin-action admin-action-danger"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      handleRemoveStaff(m);
+                    }}
+                  >
+                    remove
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
+          <form onSubmit={handleAddStaff} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <input
+              className="form-control"
+              style={{ maxWidth: 260 }}
+              type="email"
+              value={newStaffEmail}
+              onChange={(e) => setNewStaffEmail(e.target.value)}
+              placeholder="new staff member's email"
+              disabled={addingStaff}
+            />
+            <button className="btn btn-sm" type="submit" disabled={addingStaff || !newStaffEmail.trim()}>
+              {addingStaff ? 'Adding…' : '+ Add staff'}
+            </button>
+          </form>
+        </div>
+      </div>
 
-      <h3 style={{ marginTop: 24 }}>Sections</h3>
+      <h3 style={{ marginTop: 24 }}>Rooms</h3>
+      <p style={{ fontSize: 13, color: 'var(--muted)', marginTop: 0 }}>
+        A room is just a name and the group numbers it covers — it seeds a TA's live-dashboard watch list. Students
+        never see rooms.
+      </p>
       <div className="table-wrap">
         <table className="admin-table">
           <thead>
             <tr>
-              <th>Section</th>
+              <th>Room</th>
+              <th>Group numbers</th>
               <th>TA</th>
-              <th>Co-teachers</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -224,40 +291,34 @@ export default function ClassSectionsPage() {
                       )}
                     </td>
                     <td>
-                      {isAdmin ? (
-                        <select
+                      {editing ? (
+                        <input
                           className="form-control"
-                          style={{ maxWidth: 220 }}
-                          value={section.ta_id || ''}
-                          disabled={busy}
-                          onChange={(e) => handleAssignTa(section, e.target.value ? Number(e.target.value) : null)}
-                        >
-                          <option value="">Unassigned</option>
-                          {tas.map((t) => (
-                            <option key={t.id} value={t.id}>
-                              {t.display_name}
-                              {t.role === 'admin' ? ' (admin)' : ''}
-                              {t.email ? ` — ${t.email}` : ''}
-                            </option>
-                          ))}
-                        </select>
-                      ) : section.ta_name ? (
-                        <span>
-                          {section.ta_name}
-                          {section.ta_email && (
-                            <span style={{ color: 'var(--muted)', fontSize: 12 }}> ({section.ta_email})</span>
-                          )}
-                        </span>
+                          style={{ maxWidth: 160 }}
+                          value={editNumbers}
+                          onChange={(e) => setEditNumbers(e.target.value)}
+                          placeholder="e.g. 1-8,12"
+                        />
                       ) : (
-                        <span style={{ color: 'var(--muted)' }}>Unassigned</span>
+                        section.assigned_numbers || <span style={{ color: 'var(--muted)' }}>none</span>
                       )}
                     </td>
                     <td>
-                      {section.co_teachers.length > 0 ? (
-                        section.co_teachers.map((c) => c.display_name).join(', ')
-                      ) : (
-                        <span style={{ color: 'var(--muted)' }}>none</span>
-                      )}
+                      <select
+                        className="form-control"
+                        style={{ maxWidth: 220 }}
+                        value={section.ta_id || ''}
+                        disabled={busy}
+                        onChange={(e) => handleAssignTa(section, e.target.value ? Number(e.target.value) : null)}
+                      >
+                        <option value="">Unassigned</option>
+                        {staff.map((m) => (
+                          <option key={m.user_id} value={m.user_id}>
+                            {m.display_name}
+                            {m.email ? ` — ${m.email}` : ''}
+                          </option>
+                        ))}
+                      </select>
                     </td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       {editing ? (
@@ -292,7 +353,7 @@ export default function ClassSectionsPage() {
                             startEdit(section);
                           }}
                         >
-                          Rename
+                          Edit
                         </a>
                       )}
                       <a
@@ -304,16 +365,6 @@ export default function ClassSectionsPage() {
                         }}
                       >
                         Co-teachers
-                      </a>
-                      <a
-                        href="/"
-                        className="admin-action"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          toggleGroupsExpanded(section);
-                        }}
-                      >
-                        Manage groups
                       </a>
                       {isAdmin && (
                         <a
@@ -333,7 +384,8 @@ export default function ClassSectionsPage() {
                     <tr>
                       <td colSpan={4} style={{ background: 'var(--bg-subtle, #f7f8f9)' }}>
                         <p style={{ fontSize: 12, color: 'var(--muted)', margin: '4px 0 8px' }}>
-                          A co-teacher gets the exact same access to this section as its TA.
+                          A co-teacher must already be class staff; they get this room's numbers in their watch-list
+                          seed too.
                         </p>
                         {section.co_teachers.length > 0 && (
                           <div className="list-group" style={{ marginBottom: 10, maxWidth: 420 }}>
@@ -383,20 +435,13 @@ export default function ClassSectionsPage() {
                       </td>
                     </tr>
                   )}
-                  {groupsExpandedId === section.id && (
-                    <tr>
-                      <td colSpan={4} style={{ background: 'var(--bg-subtle, #f7f8f9)' }}>
-                        <SectionGroupsPanel sectionId={section.id} />
-                      </td>
-                    </tr>
-                  )}
                 </Fragment>
               );
             })}
             {sections.length === 0 && (
               <tr>
                 <td colSpan={4} style={{ color: 'var(--muted)', textAlign: 'center', padding: 20 }}>
-                  {isAdmin ? 'No sections yet — create one below.' : "You don't teach or co-teach any of this class's sections."}
+                  {isAdmin ? 'No rooms yet — create one below.' : 'No rooms yet.'}
                 </td>
               </tr>
             )}
@@ -408,7 +453,7 @@ export default function ClassSectionsPage() {
         <div style={{ marginTop: 20 }}>
           {!showNewForm && (
             <button className="btn btn-primary" onClick={() => setShowNewForm(true)}>
-              + New section
+              + New room
             </button>
           )}
           {showNewForm && (
@@ -416,20 +461,20 @@ export default function ClassSectionsPage() {
               <div className="panel-body">
                 <form onSubmit={handleCreateSection}>
                   <div className="form-group">
-                    <label htmlFor="newSectionName">Section name</label>
+                    <label htmlFor="newSectionName">Room name</label>
                     <input
                       id="newSectionName"
                       className="form-control"
                       value={newName}
                       onChange={(e) => setNewName(e.target.value)}
-                      placeholder='e.g. "Disc 12" or "R 2:00 PM-3:29 PM (VLSB2070)"'
+                      placeholder='e.g. "R 2:00 PM (VLSB 2050)"'
                       required
                       autoFocus
                     />
                   </div>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button className="btn btn-primary" type="submit" disabled={creating}>
-                      {creating ? 'Creating…' : 'Create section'}
+                      {creating ? 'Creating…' : 'Create room'}
                     </button>
                     <button className="btn" type="button" onClick={() => setShowNewForm(false)}>
                       Cancel

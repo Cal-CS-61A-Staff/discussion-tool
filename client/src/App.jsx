@@ -97,7 +97,7 @@ function AppRoutes() {
         }
       />
       <Route
-        path="/classes/:sectionId/assignments/:worksheetId"
+        path="/classes/:classId/assignments/:worksheetId"
         element={
           <RequireAuth>
             <AssignmentPage />
@@ -105,7 +105,7 @@ function AppRoutes() {
         }
       />
       <Route
-        path="/classes/:sectionId/assignments/:worksheetId/groups/:groupId"
+        path="/classes/:classId/assignments/:worksheetId/groups/:groupId"
         element={
           <RequireAuth>
             <StudentWorksheetPage />

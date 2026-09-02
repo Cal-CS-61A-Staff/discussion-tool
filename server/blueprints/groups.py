@@ -3,7 +3,13 @@ import random
 
 from flask import Blueprint, jsonify, request
 
-from server.auth import get_current_user, login_required, require_section_access, role_required
+from server.auth import (
+    get_current_user,
+    is_class_staff,
+    login_required,
+    require_class_access,
+    role_required,
+)
 from server.extensions import db
 from server.models.attempt import Attempt
 from server.models.group import Group, GroupAssignmentProgress, GroupMembership, GroupQuestionState, ScratchCode
@@ -65,9 +71,9 @@ def _worksheet_for_group_or_error(group, worksheet_id, user):
     classes' and unpublished drafts included — just by supplying its id.
     """
     worksheet = Worksheet.query.get(worksheet_id)
-    if worksheet is None or worksheet.class_id != group.section.class_id:
+    if worksheet is None or worksheet.class_id != group.class_id:
         return jsonify(error="assignment not found"), 404
-    if user.role not in ("ta", "admin") and not worksheet.is_published:
+    if not is_class_staff(user, group.klass) and not worksheet.is_published:
         return jsonify(error="this assignment hasn't been released yet"), 403
     return None
 
@@ -124,7 +130,7 @@ def get_state(group_id):
 
     user = get_current_user()
     membership = _membership(group_id, user.id)
-    if membership is None and user.role != "ta":
+    if membership is None and not is_class_staff(user, group.klass):
         return jsonify(error="not a member of this group"), 403
 
     error = _worksheet_for_group_or_error(group, worksheet_id, user)
@@ -161,7 +167,7 @@ def get_group_history(group_id):
 
     user = get_current_user()
     if _membership(group_id, user.id) is None:
-        error = require_section_access(user, group.section)
+        error = require_class_access(user, group.klass)
         if error:
             return error
 
@@ -182,7 +188,7 @@ def get_group_work(group_id, worksheet_id):
 
     user = get_current_user()
     if _membership(group_id, user.id) is None:
-        error = require_section_access(user, group.section)
+        error = require_class_access(user, group.klass)
         if error:
             return error
 
@@ -191,6 +197,27 @@ def get_group_work(group_id, worksheet_id):
         return error
 
     return jsonify(**serializers.build_group_work(group, worksheet_id, user))
+
+
+@groups_bp.put("/<int:group_id>/name")
+@login_required
+def rename_group(group_id):
+    """Any current member can (re)name the group — it's shown at the top of
+    the worksheet. Last write wins, mirroring the shared code editor."""
+    group = _load_group(group_id)
+    if group is None:
+        return jsonify(error="group not found"), 404
+
+    user = get_current_user()
+    if _membership(group_id, user.id) is None:
+        return jsonify(error="not a member of this group"), 403
+
+    name = ((request.get_json(silent=True) or {}).get("name") or "").strip()
+    if not name:
+        return jsonify(error="a name is required"), 400
+    group.name = name[:80]
+    db.session.commit()
+    return jsonify(ok=True, name=group.name)
 
 
 @groups_bp.post("/<int:group_id>/worksheets/<int:worksheet_id>/questions/<int:question_id>/practice-run")
@@ -714,7 +741,7 @@ def get_solution(group_id):
     group = _load_group(group_id)
     if group is None:
         return jsonify(error="group not found"), 404
-    error = require_section_access(get_current_user(), group.section)
+    error = require_class_access(get_current_user(), group.klass)
     if error:
         return error
 
@@ -838,7 +865,7 @@ def get_detail(group_id):
     group = _load_group(group_id)
     if group is None:
         return jsonify(error="group not found"), 404
-    error = require_section_access(get_current_user(), group.section)
+    error = require_class_access(get_current_user(), group.klass)
     if error:
         return error
 
@@ -863,7 +890,7 @@ def release_typist_route(group_id):
     group = _load_group(group_id)
     if group is None:
         return jsonify(error="group not found"), 404
-    error = require_section_access(get_current_user(), group.section)
+    error = require_class_access(get_current_user(), group.klass)
     if error:
         return error
 

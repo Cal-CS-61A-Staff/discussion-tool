@@ -31,6 +31,26 @@ def client(app):
     return app.test_client()
 
 
+def make_class(course_name="CS 61A", join_code="TESTAA"):
+    """A Class with a join code (required now). Bump `join_code` if a test
+    needs more than one class."""
+    from server.models.klass import Class
+
+    klass = Class(course_name=course_name, join_code=join_code)
+    _db.session.add(klass)
+    _db.session.flush()
+    return klass
+
+
+def add_member(user, klass, role="student"):
+    """Give `user` a per-class role. 'staff' is what used to be a global
+    `User(role="ta")` + section assignment."""
+    from server.models.klass import ClassMembership
+
+    _db.session.add(ClassMembership(user_id=user.id, class_id=klass.id, role=role))
+    _db.session.flush()
+
+
 def login_as(client, user):
     """Switches the test client's session to `user`. The `app` fixture keeps
     one app context pushed for the whole test (so a single client.get() can

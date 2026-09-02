@@ -1,11 +1,9 @@
 import { useCallback, useState } from 'react';
 import * as groupsApi from '../../api/groups.js';
-import * as sectionsApi from '../../api/sections.js';
 import { usePolling } from '../../hooks/usePolling.js';
 
 export default function GroupDetailModal({ groupId, worksheetId, onClose }) {
   const [releasing, setReleasing] = useState(false);
-  const [removingId, setRemovingId] = useState(null);
   const [actionError, setActionError] = useState('');
 
   const fetchDetail = useCallback(
@@ -27,26 +25,6 @@ export default function GroupDetailModal({ groupId, worksheetId, onClose }) {
       setActionError(err.message);
     } finally {
       setReleasing(false);
-    }
-  };
-
-  const handleRemoveMember = async (member) => {
-    if (
-      !window.confirm(
-        `Remove ${member.display_name} from this group? Use this if they can't come back (crashed tab, dropped the class, etc) and are blocking the group from advancing.`
-      )
-    ) {
-      return;
-    }
-    setActionError('');
-    setRemovingId(member.user_id);
-    try {
-      await sectionsApi.removeGroupMember(groupId, member.user_id);
-      await refetch();
-    } catch (err) {
-      setActionError(err.message);
-    } finally {
-      setRemovingId(null);
     }
   };
 
@@ -126,21 +104,7 @@ export default function GroupDetailModal({ groupId, worksheetId, onClose }) {
                       {m.display_name}
                       {m.is_typist ? ' (typist)' : ''}
                     </span>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <span>{m.rating ?? '—'}</span>
-                      {data.members.length > 1 && (
-                        <a
-                          href="/"
-                          className="admin-action admin-action-danger"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            if (removingId !== m.user_id) handleRemoveMember(m);
-                          }}
-                        >
-                          {removingId === m.user_id ? 'Removing…' : 'Remove'}
-                        </a>
-                      )}
-                    </span>
+                    <span>{m.rating ?? '—'}</span>
                   </div>
                 ))}
               </div>

@@ -6,6 +6,7 @@ from sqlalchemy import func
 from server.auth import (
     admin_required,
     get_current_user,
+    is_class_staff,
     login_required,
     require_class_access,
     require_section_access,
@@ -15,61 +16,33 @@ from server.blueprints.sections import _serialize_class, _serialize_section
 from server.extensions import db
 from server.models.attempt import Attempt
 from server.models.group import Group, GroupAssignmentProgress, GroupMembership, GroupQuestionState
-from server.models.klass import Class, ClassEnrollment
+from server.models.klass import Class, ClassMembership
 from server.models.question_response import QuestionResponse
 from server.models.rating import Rating
 from server.models.section import Section, SectionCoTeacher
+from server.models.ta_watch import TaWatchedNumber
 from server.models.test_run import TestRun
 from server.models.user import User
 from server.models.worksheet import Question, Worksheet
 from server.services import advance as advance_service
 from server.services import grading as grading_service
 from server.services import response_grading
-from server.services.roster_import import (
-    add_admin_by_email,
-    add_ta_by_email,
-    find_user_by_email,
-    import_student_roster,
-    import_ta_roster,
-)
+from server.services.number_spec import format_number_spec, parse_number_spec
+from server.services.roster_import import add_admin_by_email, find_user_by_email, import_ta_roster
 from server.services.test_case_grading import generate_simple_test_code
+from server.utils import generate_join_code
 
 admin_bp = Blueprint("admin", __name__)
 
-MAX_GROUPS_PER_CREATE_CALL = 50
 
-
-@admin_bp.get("/tas")
+@admin_bp.get("/admins")
 @admin_required
-def list_tas():
-    """Admin-only — populates the "assign a TA to this section" control.
-    Admins can also run a section, so they're offered as choices alongside
-    plain TAs.
-    """
-    tas = (
-        User.query.filter(User.role.in_(("ta", "admin")))
-        .order_by(User.display_name)
-        .all()
-    )
-    return jsonify(
-        tas=[{"id": t.id, "display_name": t.display_name, "email": t.email, "role": t.role} for t in tas]
-    )
-
-
-@admin_bp.post("/tas")
-@admin_required
-def add_ta():
-    """Admin-only — create (or promote) a TA account from just an email
-    (+ optional name), so they can be assigned to a section before they've
-    ever signed in. See server/services/roster_import.py:add_ta_by_email.
-    """
-    data = request.get_json(silent=True) or {}
-    email = (data.get("email") or "").strip().lower()
-    name = (data.get("name") or "").strip()
-    if not email or "@" not in email:
-        return jsonify(error="a valid email is required"), 400
-    ta = add_ta_by_email(email, name or None)
-    return jsonify(ta={"id": ta.id, "display_name": ta.display_name, "email": ta.email, "role": ta.role}), 201
+def list_admins():
+    """Admin-only — the current admin (global super-user) accounts, for the
+    Admin page's admin list. Per-class staff are managed separately, on the
+    class's Rooms page (GET/POST /api/classes/:id/staff)."""
+    admins = User.query.filter_by(role="admin").order_by(User.display_name).all()
+    return jsonify(admins=[{"id": a.id, "display_name": a.display_name, "email": a.email} for a in admins])
 
 
 @admin_bp.post("/admins")
@@ -110,8 +83,8 @@ def assign_section_ta(section_id):
         section.ta_user_id = None
     else:
         ta = User.query.get(ta_user_id)
-        if ta is None or ta.role not in ("ta", "admin"):
-            return jsonify(error="ta_user_id must be an existing user with the 'ta' or 'admin' role"), 400
+        if ta is None or not is_class_staff(ta, section.klass):
+            return jsonify(error="ta_user_id must be a staff member of this class"), 400
         section.ta_user_id = ta.id
 
     db.session.commit()
@@ -138,10 +111,17 @@ def create_class():
     if not course_name:
         return jsonify(error="course_name is required"), 400
 
-    klass = Class(course_name=course_name)
+    code = generate_join_code()
+    while Class.query.filter_by(join_code=code).first() is not None:
+        code = generate_join_code()
+    klass = Class(course_name=course_name, join_code=code)
     db.session.add(klass)
+    db.session.flush()
+    # The creating admin gets an explicit staff membership so the class
+    # shows up as theirs to manage, not just via the admin super-user path.
+    db.session.add(ClassMembership(user_id=user.id, class_id=klass.id, role="staff"))
     db.session.commit()
-    return jsonify(klass=_serialize_class(klass, user)), 201
+    return jsonify(klass=_serialize_class(klass, "staff")), 201
 
 
 @admin_bp.put("/classes/<int:class_id>/archive")
@@ -160,7 +140,7 @@ def archive_class(class_id):
 
     klass.is_archived = is_archived
     db.session.commit()
-    return jsonify(klass=_serialize_class(klass, get_current_user()))
+    return jsonify(klass=_serialize_class(klass, "staff"))
 
 
 @admin_bp.delete("/classes/<int:class_id>")
@@ -175,11 +155,12 @@ def delete_class(class_id):
 
     section_ids = [s.id for s in Section.query.filter_by(class_id=klass.id).with_entities(Section.id).all()]
     if section_ids:
-        _delete_groups_cascade(section_ids)
         SectionCoTeacher.query.filter(SectionCoTeacher.section_id.in_(section_ids)).delete(synchronize_session=False)
         Section.query.filter(Section.id.in_(section_ids)).delete(synchronize_session=False)
 
-    ClassEnrollment.query.filter_by(class_id=klass.id).delete(synchronize_session=False)
+    _delete_class_groups_cascade(klass.id)
+    ClassMembership.query.filter_by(class_id=klass.id).delete(synchronize_session=False)
+    TaWatchedNumber.query.filter_by(class_id=klass.id).delete(synchronize_session=False)
 
     worksheet_ids = [w.id for w in Worksheet.query.filter_by(class_id=klass.id).with_entities(Worksheet.id).all()]
     _delete_worksheets_cascade(worksheet_ids)
@@ -211,12 +192,13 @@ def create_section():
     return jsonify(section=_serialize_section(section, get_current_user())), 201
 
 
-def _delete_groups_cascade(section_ids):
-    """Shared by delete_section and delete_class — wipes every group (and
-    its progress/history) across the given sections. SQLite FK enforcement
-    is off by default in this app, so cascading is done explicitly.
+def _delete_class_groups_cascade(class_id):
+    """Used by delete_class — wipes every group in the class (and its
+    progress/history). Groups are class-scoped now, not per-room, so a
+    room deletion never touches them. SQLite FK enforcement is off by
+    default in this app, so cascading is done explicitly.
     """
-    group_ids = [g.id for g in Group.query.filter(Group.section_id.in_(section_ids)).with_entities(Group.id).all()]
+    group_ids = [g.id for g in Group.query.filter_by(class_id=class_id).with_entities(Group.id).all()]
     if not group_ids:
         return
     TestRun.query.filter(TestRun.group_id.in_(group_ids)).delete(synchronize_session=False)
@@ -227,7 +209,7 @@ def _delete_groups_cascade(section_ids):
         synchronize_session=False
     )
     GroupMembership.query.filter(GroupMembership.group_id.in_(group_ids)).delete(synchronize_session=False)
-    Group.query.filter(Group.section_id.in_(section_ids)).delete(synchronize_session=False)
+    Group.query.filter_by(class_id=class_id).delete(synchronize_session=False)
 
 
 def _delete_worksheets_cascade(worksheet_ids):
@@ -258,17 +240,13 @@ def _delete_worksheets_cascade(worksheet_ids):
 @admin_bp.delete("/sections/<int:section_id>")
 @admin_required
 def delete_section(section_id):
-    """Admin-only — wipes this section's groups/progress/history and its
-    co-teacher records. The course roster (ClassEnrollment) and assignments
-    belong to the class now (server/models/klass.py), not this section, so
-    deleting a section never removes those — only deleting the whole class
-    does (see delete_class above).
+    """Admin-only — deletes the room and its co-teacher records only.
+    Groups, progress and history are class-scoped now (server/models/
+    group.py) and outlive any room; only deleting the whole class removes
+    those (see delete_class above).
     """
     section = Section.query.get_or_404(section_id)
-
-    _delete_groups_cascade([section.id])
     SectionCoTeacher.query.filter_by(section_id=section.id).delete(synchronize_session=False)
-
     db.session.delete(section)
     db.session.commit()
     return jsonify(ok=True)
@@ -277,10 +255,10 @@ def delete_section(section_id):
 @admin_bp.put("/sections/<int:section_id>/details")
 @role_required("ta")
 def update_section_details(section_id):
-    """A section's own TA/co-teacher (or an admin) can rename it — unlike
-    assign_section_ta (who's in charge), this is just the section's own
-    label, so it doesn't need admin_required. The class it belongs to
-    (course_name) isn't editable here — see create_class/PUT /classes/:id.
+    """Any staff member of the room's class (or an admin) can rename it and
+    set which group **numbers** it covers (`assigned_numbers`, a spec like
+    "1-8,12" — this seeds a TA's dashboard watch list). Assigning who runs
+    the room stays admin-only (assign_section_ta).
     """
     section = Section.query.get_or_404(section_id)
     error = require_section_access(get_current_user(), section)
@@ -293,6 +271,8 @@ def update_section_details(section_id):
         return jsonify(error="name is required"), 400
 
     section.name = name
+    if "assigned_numbers" in data:
+        section.assigned_numbers = format_number_spec(parse_number_spec(data.get("assigned_numbers") or ""))
     db.session.commit()
     return jsonify(section=_serialize_section(section, get_current_user()))
 
@@ -329,10 +309,10 @@ def add_co_teacher(section_id):
         return jsonify(error="email is required"), 400
 
     ta = find_user_by_email(email)
-    if ta is None or ta.role not in ("ta", "admin"):
-        return jsonify(error="no TA or admin account found with that email — they need to sign in once first"), 404
+    if ta is None or not is_class_staff(ta, section.klass):
+        return jsonify(error="that person isn't staff of this class — add them as class staff first"), 404
     if ta.id == section.ta_user_id:
-        return jsonify(error="that TA already owns this section"), 400
+        return jsonify(error="that person already runs this room"), 400
 
     existing = SectionCoTeacher.query.filter_by(section_id=section.id, user_id=ta.id).first()
     if existing is None:
@@ -374,125 +354,6 @@ def import_roster():
         return jsonify(error="csv is required"), 400
     summary = import_ta_roster(text)
     return jsonify(summary=summary)
-
-
-@admin_bp.post("/roster/import-students")
-@admin_required
-def import_students():
-    """Admin-only — uploads the student roster CSV for one class: columns
-    `Email, Name` (Name optional). Each email becomes a ClassEnrollment row;
-    a placeholder student account is created for any named email with no
-    account yet. See server/services/roster_import.py.
-    """
-    data = request.get_json(silent=True) or {}
-    text = data.get("csv") or ""
-    class_id = data.get("class_id")
-    if not text.strip():
-        return jsonify(error="csv is required"), 400
-    if not class_id:
-        return jsonify(error="class_id is required"), 400
-    if Class.query.get(class_id) is None:
-        return jsonify(error="class not found"), 404
-    summary = import_student_roster(text, class_id)
-    return jsonify(summary=summary)
-
-
-@admin_bp.post("/sections/<int:section_id>/groups")
-@role_required("ta")
-def create_groups(section_id):
-    section = Section.query.get_or_404(section_id)
-    error = require_section_access(get_current_user(), section)
-    if error:
-        return error
-    data = request.get_json(silent=True) or {}
-    try:
-        count = int(data.get("count", 1))
-    except (TypeError, ValueError):
-        return jsonify(error="count must be an integer"), 400
-    if count < 1 or count > MAX_GROUPS_PER_CREATE_CALL:
-        return jsonify(error=f"count must be between 1 and {MAX_GROUPS_PER_CREATE_CALL}"), 400
-
-    max_number = (
-        db.session.query(func.max(Group.number)).filter_by(section_id=section.id, is_individual=False).scalar() or 0
-    )
-
-    created = []
-    for offset in range(1, count + 1):
-        number = max_number + offset
-        group = Group(section_id=section.id, number=number, name=f"Group {number}")
-        db.session.add(group)
-        created.append(group)
-    db.session.commit()
-
-    return jsonify(groups=[_serialize_group(g) for g in created]), 201
-
-
-@admin_bp.put("/groups/<int:group_id>")
-@role_required("ta")
-def rename_group(group_id):
-    group = Group.query.get_or_404(group_id)
-    error = require_section_access(get_current_user(), group.section)
-    if error:
-        return error
-    data = request.get_json(silent=True) or {}
-    name = (data.get("name") or "").strip()
-    if not name:
-        return jsonify(error="name is required"), 400
-    group.name = name
-    db.session.commit()
-    return jsonify(group=_serialize_group(group))
-
-
-@admin_bp.delete("/groups/<int:group_id>")
-@role_required("ta")
-def delete_group(group_id):
-    group = Group.query.get_or_404(group_id)
-    error = require_section_access(get_current_user(), group.section)
-    if error:
-        return error
-    # SQLite FK enforcement is off by default in this app, so cascading is
-    # done explicitly rather than relying on ON DELETE CASCADE.
-    TestRun.query.filter_by(group_id=group.id).delete()
-    Attempt.query.filter_by(group_id=group.id).delete()
-    Rating.query.filter_by(group_id=group.id).delete()
-    GroupQuestionState.query.filter_by(group_id=group.id).delete()
-    GroupAssignmentProgress.query.filter_by(group_id=group.id).delete()
-    GroupMembership.query.filter_by(group_id=group.id).delete()
-    db.session.delete(group)
-    db.session.commit()
-    return jsonify(ok=True)
-
-
-@admin_bp.delete("/groups/<int:group_id>/members/<int:user_id>")
-@role_required("ta")
-def remove_group_member(group_id, user_id):
-    """Removes one member from a group without touching the rest of its
-    progress/history — the fix for a group stuck waiting on a rating from
-    someone who crashed/left and isn't coming back: all_members_rated
-    (server/services/advance.py) counts every current GroupMembership row
-    with no timeout, so a member who'll never return blocks the group
-    forever until removed. Their past Rating/TestRun/Attempt rows are left
-    in place as history; harmless, since the readiness checks only compare
-    counts for the *current* question. If they were the pen-holder,
-    reassign_if_stale already treats a missing membership the same as a
-    stale one, so the next /state poll from a remaining member hands the
-    pen off automatically — no extra handling needed here.
-    """
-    group = Group.query.get_or_404(group_id)
-    error = require_section_access(get_current_user(), group.section)
-    if error:
-        return error
-    membership = GroupMembership.query.filter_by(group_id=group_id, user_id=user_id).first()
-    if membership is None:
-        return jsonify(error="that user is not a member of this group"), 404
-    # all_members_rated (services/advance.py) treats a 0-member group as
-    # never-ready, so removing the last member would make the group
-    # permanently un-advanceable — the opposite of this endpoint's purpose.
-    if GroupMembership.query.filter_by(group_id=group_id).count() <= 1:
-        return jsonify(error="can't remove the last member of a group — delete the group instead"), 409
-    db.session.delete(membership)
-    db.session.commit()
-    return jsonify(ok=True)
 
 
 @admin_bp.post("/classes/<int:class_id>/worksheets")
@@ -1014,19 +875,21 @@ def worksheet_grades(worksheet_id):
     if error:
         return error
     questions = Question.query.filter_by(worksheet_id=worksheet_id).order_by(Question.order_index).all()
-    # This assignment is shared across every section of its class, so
-    # "every group working on it" spans all of those sections, not one.
-    groups = Group.query.join(Section, Group.section_id == Section.id).filter(Section.class_id == worksheet.class_id).all()
-    # Exclude a TA/admin's own "View as student" solo group (work_individually,
-    # server/blueprints/sections.py) — a staff sanity-check run through an
-    # assignment isn't a real student attempt and shouldn't show up in grades.
-    staff_group_ids = {
-        m.group_id
-        for m in GroupMembership.query.join(User, GroupMembership.user_id == User.id)
-        .filter(User.role.in_(("ta", "admin")))
-        .all()
-    }
-    groups = [g for g in groups if g.id not in staff_group_ids]
+    # Groups are class-scoped now — every group in the class is "working on"
+    # any of its assignments.
+    groups = Group.query.filter_by(class_id=worksheet.class_id).all()
+    # Exclude a staff member's own "View as student" solo group
+    # (work_individually, server/blueprints/sections.py) — a sanity-check
+    # run through an assignment isn't a real student attempt. A real
+    # student working solo still counts.
+    staff_solo_ids = set()
+    for g in groups:
+        if not g.is_individual:
+            continue
+        member = GroupMembership.query.filter_by(group_id=g.id).first()
+        if member is not None and is_class_staff(member.user, worksheet.klass):
+            staff_solo_ids.add(g.id)
+    groups = [g for g in groups if g.id not in staff_solo_ids]
 
     payload = []
     for group in groups:
@@ -1076,13 +939,10 @@ def _slugify(title):
     return slug.strip("-") or "assignment"
 
 
-def _serialize_group(group):
-    return {"id": group.id, "number": group.number, "name": group.name, "section_id": group.section_id}
-
-
 def _serialize_worksheet(worksheet):
     return {
         "id": worksheet.id,
+        "class_id": worksheet.class_id,
         "slug": worksheet.slug,
         "title": worksheet.title,
         "description": worksheet.description,

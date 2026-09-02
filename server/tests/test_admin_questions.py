@@ -9,26 +9,19 @@ import json
 
 from server.extensions import db
 from server.models.group import Group
-from server.models.klass import Class
-from server.models.section import Section
 from server.models.test_run import TestRun
 from server.models.user import User
 from server.models.worksheet import Question, Worksheet
-from server.tests.conftest import login_as
+from server.tests.conftest import add_member, login_as, make_class
 
 
 def _make_section_with_questions(n=3):
-    ta = User(display_name="ta", role="ta")
+    ta = User(display_name="ta", role="student")
     db.session.add(ta)
     db.session.flush()
 
-    klass = Class(course_name="C")
-    db.session.add(klass)
-    db.session.flush()
-
-    section = Section(class_id=klass.id, name="S", ta_user_id=ta.id)
-    db.session.add(section)
-    db.session.flush()
+    klass = make_class("C")
+    add_member(ta, klass, "staff")
 
     worksheet = Worksheet(class_id=klass.id, slug="w1", title="W1")
     db.session.add(worksheet)
@@ -42,11 +35,11 @@ def _make_section_with_questions(n=3):
 
     db.session.commit()
 
-    return section, worksheet, questions, ta
+    return klass, worksheet, questions, ta
 
 
 def test_reorder_questions_persists_new_order(app, client):
-    _section, worksheet, questions, ta = _make_section_with_questions(3)
+    klass, worksheet, questions, ta = _make_section_with_questions(3)
     login_as(client, ta)
 
     reversed_ids = [q.id for q in reversed(questions)]
@@ -58,7 +51,7 @@ def test_reorder_questions_persists_new_order(app, client):
 
 
 def test_reorder_rejects_mismatched_id_set(app, client):
-    _section, worksheet, questions, ta = _make_section_with_questions(3)
+    klass, worksheet, questions, ta = _make_section_with_questions(3)
     login_as(client, ta)
 
     bad_order = [questions[0].id, questions[1].id]  # missing questions[2]
@@ -70,7 +63,7 @@ def test_reorder_rejects_mismatched_id_set(app, client):
 
 
 def test_delete_question_renumbers_remaining(app, client):
-    _section, worksheet, questions, ta = _make_section_with_questions(3)
+    klass, worksheet, questions, ta = _make_section_with_questions(3)
     login_as(client, ta)
 
     middle_id = questions[1].id
@@ -83,10 +76,10 @@ def test_delete_question_renumbers_remaining(app, client):
 
 
 def test_worksheet_grades_counts_a_question_ever_passed(app, client):
-    section, worksheet, questions, ta = _make_section_with_questions(2)
+    klass, worksheet, questions, ta = _make_section_with_questions(2)
     login_as(client, ta)
 
-    group = Group(section_id=section.id, number=1, name="G1")
+    group = Group(class_id=klass.id, number=1, name="G1")
     db.session.add(group)
     student = User(display_name="s1", role="student")
     db.session.add(student)
@@ -126,10 +119,10 @@ def test_worksheet_grades_dont_regress_after_a_later_failing_attempt(app, client
     passing run followed by a *failing* one shouldn't un-count the
     question — see advance_service.has_ever_passed_tests.
     """
-    section, worksheet, questions, ta = _make_section_with_questions(2)
+    klass, worksheet, questions, ta = _make_section_with_questions(2)
     login_as(client, ta)
 
-    group = Group(section_id=section.id, number=1, name="G1")
+    group = Group(class_id=klass.id, number=1, name="G1")
     db.session.add(group)
     student = User(display_name="s1", role="student")
     db.session.add(student)
@@ -159,12 +152,12 @@ def test_worksheet_grades_dont_regress_after_a_later_failing_attempt(app, client
 
 
 def test_delete_worksheet_cascades(app, client):
-    section, worksheet, questions, ta = _make_section_with_questions(1)
+    klass, worksheet, questions, ta = _make_section_with_questions(1)
     login_as(client, ta)
     worksheet_id = worksheet.id
     question_id = questions[0].id
 
-    group = Group(section_id=section.id, number=1, name="G1")
+    group = Group(class_id=klass.id, number=1, name="G1")
     db.session.add(group)
     student = User(display_name="s1", role="student")
     db.session.add(student)

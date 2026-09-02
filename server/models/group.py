@@ -3,27 +3,34 @@ from server.utils import utcnow
 
 
 class Group(db.Model):
-    """A roster group scoped to a class (Section), not to any one
-    assignment — it persists across every Worksheet in that class. Per-
-    assignment mutable state (current question, typist, cooldown) lives on
-    GroupAssignmentProgress instead, one row per (group, worksheet).
+    """A roster group scoped to a Class, not to any one assignment or room
+    — it persists across every Worksheet in that class. Students land in
+    one by typing its `number` on an assignment's join screen (Pensive
+    style): everyone who types the same number in the same class is in the
+    same group. Per-assignment mutable state (current question, typist,
+    cooldown) lives on GroupAssignmentProgress, one row per (group,
+    worksheet).
     """
 
     __tablename__ = "groups"
-    __table_args__ = (db.UniqueConstraint("section_id", "number"),)
+    __table_args__ = (db.UniqueConstraint("class_id", "number"),)
 
     id = db.Column(db.Integer, primary_key=True)
-    section_id = db.Column(db.Integer, db.ForeignKey("sections.id"), nullable=False)
-    # Sequential per section (1, 2, 3...), TA-assigned. Nullable: a personal
-    # is_individual group has no human-facing number (SQLite treats
+    class_id = db.Column(db.Integer, db.ForeignKey("classes.id"), nullable=False)
+    # The number a student types to join. Nullable: a personal
+    # is_individual group has no number (SQLite/Postgres both treat
     # multiple NULLs in a unique constraint as distinct, so this is safe).
     number = db.Column(db.Integer, nullable=True)
+    # Free-text label a group can give itself, shown at the top of the
+    # worksheet — any member can set it (PUT /api/groups/:id/name).
     name = db.Column(db.String(80), nullable=False)
     # Auto-provisioned personal group backing "work individually" — reuses
     # all the same group/typist/cooldown/rating machinery for a group of
     # one, rather than a parallel solo-mode code path.
     is_individual = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=utcnow)
+
+    klass = db.relationship("Class")
 
 
 class GroupAssignmentProgress(db.Model):
@@ -55,7 +62,8 @@ class GroupMembership(db.Model):
     group_id = db.Column(db.Integer, db.ForeignKey("groups.id"), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     # Bumped on every /state poll — doubles as a free heartbeat used to
-    # auto-release an inactive typist (see services/typist.py).
+    # auto-release an inactive typist (see services/typist.py) and to show
+    # a TA who's currently logged into each watched number.
     last_seen_at = db.Column(db.DateTime, default=utcnow)
     joined_at = db.Column(db.DateTime, default=utcnow)
 
